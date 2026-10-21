@@ -2,7 +2,7 @@
 
 Sketch house floor plans with exact measurements: rooms, walls, doors, windows, stairs, furniture, labels and smart dimensions. Works on phones and computers, installs to the home screen, and runs offline.
 
-**Open the app:** https://frozencake132.github.io/floorplan/
+**Open the app:** https://frozencake132.github.io/Floorplan/
 
 **Install it:** on iPhone, open the link in Safari › Share › Add to Home Screen. On Android, open it in Chrome › ⋮ › Install app.
 
