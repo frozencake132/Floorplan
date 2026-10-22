@@ -382,8 +382,9 @@ function inset(p,d){const n=p.length,sg=polyArea(p)>0?1:-1,L=[];
     if(Math.abs(cr)<1e-9){out.push(B.p);continue;}const w=V.sub(B.p,A.p);const s=(w[0]*B.u[1]-w[1]*B.u[0])/cr;out.push(V.add(A.p,V.mul(A.u,s)));}
   return out;}
 function inwardSign(p){return polyArea(p)>0?1:-1;}
-function edgeLens(r,mode){mode=mode||S().measure;const q=mode==='inside'?inset(r.pts,(r.t||0)/2):r.pts;const n=q.length;return q.map((a,i)=>V.dist(a,q[(i+1)%n]));}
-function roomArea(r){return Math.abs(polyArea(S().measure==='inside'?inset(r.pts,(r.t||0)/2):r.pts));}
+function edgeLens(r,mode){mode=mode||(r.outline?(r.omeasure||'outside'):S().measure);const q=mode==='inside'?inset(r.pts,(r.t||0)/2):mode==='outside'?inset(r.pts,-(r.t||0)/2):r.pts;const n=q.length;return q.map((a,i)=>V.dist(a,q[(i+1)%n]));}
+function roomArea(r){return Math.abs(polyArea(S().measure==='inside'||r.outline?inset(r.pts,(r.t||0)/2):r.pts));}
+function outlineStats(r){const inner=cur.objects.filter(x=>x.type==='room'&&!x.outline&&x!==r&&inPoly(labelPoint(x.pts),r.pts)),tot=roomArea(r),used=inner.reduce((a,x)=>a+roomArea(x),0);return{tot,used,left:Math.max(0,tot-used),n:inner.length,inner};}
 function projSeg(p,a,b){const ab=V.sub(b,a),L2=V.dot(ab,ab)||1;let t=V.dot(V.sub(p,a),ab)/L2;t=Math.max(0,Math.min(1,t));return{q:V.add(a,V.mul(ab,t)),t,L:Math.sqrt(L2)};}
 function furnCorners(o){return[[-o.w/2,-o.h/2],[o.w/2,-o.h/2],[o.w/2,o.h/2],[-o.w/2,o.h/2]].map(c=>V.add([o.x,o.y],V.rot(c,(o.rot||0)*deg)));}
 function normAng(a){a=((a%360)+360)%360;return Math.round(a*1000)/1000%360;}
@@ -658,7 +659,9 @@ function hostSnap(p,w){const thr=Math.max(24/view.s,8);let best=null,bd=thr;
 function roomAt(p){const rs=cur.objects.filter(o=>o.type==='room');for(let i=rs.length-1;i>=0;i--)if(inPoly(p,rs[i].pts))return rs[i];return null;}
 function doorRooms(d){const n=[-Math.sin(d.ang*deg),Math.cos(d.ang*deg)],off=(d.t||5)/2+6;return[roomAt(V.add([d.x,d.y],V.mul(n,off))),roomAt(V.sub([d.x,d.y],V.mul(n,off)))];}
 function onEdgeOf(r,p,tol){const n=r.pts.length;for(let i=0;i<n;i++){const pr=projSeg(p,r.pts[i],r.pts[(i+1)%n]);if(V.dist(pr.q,p)<tol)return i;}return -1;}
-function attachedTo(r){const out=[];for(const o of cur.objects){if(o===r)continue;
+function attachedTo(r){const out=[];
+  if(r.outline){const inside=p=>inPoly(p,r.pts)||onEdgeOf(r,p,(r.t||5))>=0;for(const o of cur.objects){if(o===r||o.type==='sdim'||o.outline)continue;const pts=(o.type==='door'||o.type==='furn'||o.type==='text')?[[o.x,o.y]]:objPoints(o);if(pts.length&&pts.every(inside))out.push(o);}return out;}
+  for(const o of cur.objects){if(o===r)continue;
   if(o.type==='door'){if(onEdgeOf(r,[o.x,o.y],1)>=0)out.push(o);}
   else if(o.type==='furn'||o.type==='text'){if(inPoly([o.x,o.y],r.pts))out.push(o);}
   else if(o.type==='pen'){if(o.pts.length&&inPoly(o.pts[0],r.pts))out.push(o);}}return out;}
@@ -731,9 +734,13 @@ function stairDetail(o,K,px){const w=o.w,h=o.h,x0=-w/2,y0=-h/2,run=o.run||10,ln=
     for(let i=0;i<n;i++){const a=i/n*2*Math.PI;s+=`<line x1="${F(Math.cos(a)*pr)}" y1="${F(Math.sin(a)*pr)}" x2="${F(Math.cos(a)*R)}" y2="${F(Math.sin(a)*R)}" style="${ln}"/>`;}
     s+=`<circle r="${F(pr)}" style="fill:${K.furn};stroke:${K.ink};stroke-width:${F(px(1.2))}"/><path d="M0 ${F(R2)}A${F(R2)} ${F(R2)} 0 1 1 ${F(R2)} 0${head(R2,0,0,1)}" style="${ar}"/>`+txt(0,R2,Math.min(R*0.3,10));}
   return s;}
-function scene(K,sc,live){const px=v=>v/sc;const objs=cur.objects;let s='';const rooms=objs.filter(o=>o.type==='room');
+function scene(K,sc,live){const px=v=>v/sc;const objs=cur.objects;let s='';const rooms=objs.filter(o=>o.type==='room').sort((a,b)=>(b.outline?1:0)-(a.outline?1:0));
   const di=live?o=>` data-id="${o.id}"`:()=>'';
-  for(const r of rooms)s+=`<polygon${di(r)} points="${P(r.pts)}" style="fill:${r.color||'#8fb8de'};fill-opacity:.42"/>`;
+  for(const r of rooms){if(!r.outline){s+=`<polygon${di(r)} points="${P(r.pts)}" style="fill:${r.color||'#8fb8de'};fill-opacity:.42"/>`;continue;}
+    const st=outlineStats(r),g=F(px(10)),hid=(live?'h':'x')+r.id,mid=(live?'m':'y')+r.id;
+    s+=`<defs><pattern id="${hid}" width="${g}" height="${g}" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><line x1="0" y1="0" x2="0" y2="${g}" style="stroke:${K.muted};stroke-width:${F(px(1.2))};stroke-opacity:.55"/></pattern>
+      <mask id="${mid}"><polygon points="${P(r.pts)}" style="fill:#fff"/>${st.inner.map(x=>`<polygon points="${P(x.pts)}" style="fill:#000;stroke:#000;stroke-width:${F(x.t||5)}"/>`).join('')}</mask></defs>
+      <polygon points="${P(r.pts)}" mask="url(#${mid})" style="fill:url(#${hid});pointer-events:none"/>`;}
   for(const o of objs.filter(o=>o.type==='furn')){const round=o.kind==='round'||o.kind==='spiral',isStair=STAIR_KINDS.includes(o.kind);
     s+=`<g${di(o)} transform="translate(${F(o.x)} ${F(o.y)}) rotate(${F(o.rot||0)})${o.flip?' scale(-1 1)':''}">`+
       (o.kind==='stairsL'?`<polygon points="${P(stairOutline(o))}" style="fill:${o.color||K.furn};fill-opacity:.92;stroke:${K.ink};stroke-width:${F(px(1.3))}"/>${live?`<rect x="${F(-o.w/2)}" y="${F(-o.h/2)}" width="${F(o.w)}" height="${F(o.h)}" style="fill:transparent;pointer-events:none"/>`:''}`:
@@ -778,13 +785,16 @@ function scene(K,sc,live){const px=v=>v/sc;const objs=cur.objects;let s='';const
       lines.map((l,i)=>`<tspan x="${F(t.x)}" dy="${i===0?F(-(lines.length-1)*0.6)+'em':'1.2em'}">${esc(l)||' '}</tspan>`).join('')+'</text>';}
   // room labels and wall lengths
   for(const r of rooms){const c=labelPoint(r.pts),b=bbox(r.pts),wpx=(b[2]-b[0])*sc,hpx=(b[3]-b[1])*sc;
-    if(wpx>34&&hpx>20){const big=wpx>90&&hpx>44;
+    if(r.outline){if(wpx>120){const st=outlineStats(r),x=b[0],y=b[1]-(r.t||5)/2-px(36);
+        s+=`<text x="${F(x)}" y="${F(y)}" style="font-family:${K.hand};font-size:${F(px(15))}px;fill:${K.ink};pointer-events:none;${halo(K,px)}">${esc(r.label||'House outline')}</text>`+
+          `<text x="${F(x)}" y="${F(y+px(16))}" style="font-family:${K.mono};font-size:${F(px(10.5))}px;fill:${K.muted};pointer-events:none;${halo(K,px)}">${esc(fmtArea(st.tot)+' inside'+(st.n?' · '+fmtArea(st.left)+' not in rooms':''))}</text>`;}}
+    else if(wpx>34&&hpx>20){const big=wpx>90&&hpx>44;
       s+=`<text x="${F(c[0])}" y="${F(c[1]-(big&&r.showArea!==false?px(7):0))}" text-anchor="middle" dominant-baseline="central" style="font-family:${K.hand};font-size:${F(px(big?16:12))}px;fill:${K.ink};pointer-events:none;${halo(K,px)}">${esc(r.label||'Room')}</text>`;
       if(big&&r.showArea!==false)s+=`<text x="${F(c[0])}" y="${F(c[1]+px(11))}" text-anchor="middle" dominant-baseline="central" style="font-family:${K.mono};font-size:${F(px(10.5))}px;fill:${K.muted};pointer-events:none;${halo(K,px)}">${esc(fmtArea(roomArea(r)))}</text>`;}
     const isSel=live&&r.id===sel;if(!(S().dims||isSel))continue;
     const lens=edgeLens(r),n=r.pts.length,sg=inwardSign(r.pts);
     for(let i=0;i<n;i++){const a=r.pts[i],bb=r.pts[(i+1)%n],L=V.dist(a,bb);if(L*sc<(isSel?30:46))continue;if(dimOn({o:r.id,e:i}))continue;const u=V.norm(V.sub(bb,a));
-      const nin=sg>0?[-u[1],u[0]]:[u[1],-u[0]];const m=V.add(V.mul(V.add(a,bb),0.5),V.mul(nin,(r.t||5)/2+px(9)));const ang=readable(Math.atan2(u[1],u[0])/deg);
+      const nin=sg>0?[-u[1],u[0]]:[u[1],-u[0]];const m=V.add(V.mul(V.add(a,bb),0.5),V.mul(nin,(r.outline?-1:1)*((r.t||5)/2+px(9))));const ang=readable(Math.atan2(u[1],u[0])/deg);
       s+=`<text x="${F(m[0])}" y="${F(m[1])}" transform="rotate(${F(ang)} ${F(m[0])} ${F(m[1])})" text-anchor="middle" dominant-baseline="central" style="font-family:${K.mono};font-size:${F(px(10.5))}px;fill:${isSel?K.accent:K.muted};font-weight:${isSel?600:400};pointer-events:none;${halo(K,px)}">${isSel?String.fromCharCode(65+i)+' · ':''}${esc(fmtLen(lens[i]))}</text>`;}}
   for(const w of objs.filter(o=>o.type==='wall')){if(!(S().dims||(live&&w.id===sel)))continue;const L=wallLen(w);if(L*sc<46)continue;
     const u=V.norm(V.sub(w.b,w.a)),cv=isCurved(w),n=[-u[1],u[0]],sd=cv?(w.bend>0?1:-1):-1,m=V.add(wallMid(w),V.mul(n,sd*((w.t||5)/2+px(9)))),ang=readable(Math.atan2(u[1],u[0])/deg);
@@ -1538,7 +1548,7 @@ function sdApply(){const el=$('#sd-val');if(!el||!sdPick)return;const isAng=!!sd
   const v=isAng?smartAngle(el.value):parseLen(el.value,0,sdCurrent());
   if(!(v>0)||(isAng&&v>=360)){toast(isAng?'Type an angle in degrees, like 90':'Couldn’t read that length. Try 12\' 6"');return;}
   const pre=snapState(),ex=dimOn(ref,isAng?'ang':'len');let d;
-  if(ex){d=ex;d.value=v;}else{d={id:rid(),type:'sdim',kind:isAng?'ang':'len',ref:clone(ref),value:v,mode:S().measure,off:isAng?0:18};cur.objects.push(d);}
+  if(ex){d=ex;d.value=v;}else{const ro=get(ref.o);d={id:rid(),type:'sdim',kind:isAng?'ang':'len',ref:clone(ref),value:v,mode:ro&&ro.outline?(ro.omeasure||'outside'):S().measure,off:isAng?0:18};cur.objects.push(d);}
   if(!enforceDim(d)){restoreState(pre);toast('That can’t work with the other smart dimensions. Change or delete one of them first.');render();return;}
   pushPre(pre);sdPick=null;changed();updateHint();toast(`${sdDesc(d)} locked at ${isAng?F(v)+'°':fmtLen(v)}`);}
 // blocks a direct change to something a dimension sets; returns true if blocked
@@ -1716,7 +1726,7 @@ function planPanel(){const st=S(),rooms=cur.objects.filter(o=>o.type==='room');c
   ${fld('Snap grid','f-grid',`<select id="f-grid" data-f="grid">${grids.map(g=>`<option value="${g[0]}"${Math.abs(g[0]-st.grid)<1e-6?' selected':''}>${g[1]}</option>`).join('')}</select>`)}</div>`+
   fld('Room sizes measure','f-measure',`<select id="f-measure" data-f="measure"><option value="inside"${st.measure==='inside'?' selected':''}>Inside face of walls (tape measure)</option><option value="center"${st.measure==='center'?' selected':''}>Wall centerlines</option></select>`)+
   `<label class="chk"><input type="checkbox" id="f-dims" data-f="dims"${st.dims?' checked':''}> Show wall lengths on every room</label><label class="chk"><input type="checkbox" id="f-snap" data-f="snap"${st.snap?' checked':''}> Snap to grid and corners</label>`+
-  `<div class="sec"><h3>Project</h3><div class="btns"><button class="btn primary" data-act="psave">Save</button><button class="btn" data-act="popen">Open another…</button><button class="btn" data-act="pnew">New blank project</button><button class="btn danger" data-act="pclear">${clearArm?'Tap again to clear':'Clear this plan'}</button><button class="btn" data-act="fpiopen">Import a floor plan…</button></div><p class="note">${cur.example?'This is the example. Edit it or save it to keep it, or start a new project.':'Saves automatically as you work.'}</p></div>`+
+  `<div class="sec"><h3>Project</h3><div class="btns"><button class="btn primary" data-act="psave">Save</button><button class="btn" data-act="popen">Open another…</button><button class="btn" data-act="pnew">New blank project</button><button class="btn danger" data-act="pclear">${clearArm?'Tap again to clear':'Clear this plan'}</button><button class="btn" data-act="fpiopen">Import a floor plan…</button><button class="btn" data-act="addoutline">Add house outline</button></div><p class="note">${cur.example?'This is the example. Edit it or save it to keep it, or start a new project.':'Saves automatically as you work.'}</p></div>`+
   `<div class="sec"><h3>Using it in the house</h3><label class="chk"><input type="checkbox" id="f-wake"${wakeOn?' checked':''}> Keep the screen on while this is open</label>${fsOK()?`<div class="btns"><button class="btn" data-act="fs">${document.fullscreenElement||document.webkitFullscreenElement?'Exit full screen':'Full screen'}</button></div>`:''}</div>`+
   (getBg()?`<div class="sec"><h3>Plan picture</h3><label class="chk"><input type="checkbox" id="f-bgshow"${getBg().hide?'':' checked'}> Show the imported picture under the plan</label>
     <div class="fld"><label for="f-bgop">Picture strength</label><input type="range" id="f-bgop" min="0.1" max="1" step="0.05" value="${getBg().op??0.4}"></div>
@@ -1733,9 +1743,15 @@ function sdimPanel(o){const m=sdMeasure(o);
     `<p class="note">${o.kind==='len'&&get(o.ref.o)&&get(o.ref.o).type==='room'?(o.mode==='inside'?'Measured on the inside face of the walls. ':'Measured on the wall centerlines. '):''}Change the value here to resize. Nothing else can change this size while the dimension exists, and walls connected to it adjust to keep every dimension true.</p>`+
     `<div class="sec"><div class="btns"><button class="btn danger" data-act="del">Delete dimension</button></div><p class="note">Drag the square handle to move the dimension line.</p></div>`;}
 function objPanel(o){if(o.type==='sdim')return sdimPanel(o);let h=fld(o.type==='text'?'Text':'Label',o.type==='text'?'f-text':'f-label',o.type==='text'?`<textarea id="f-text" data-f="text" rows="2">${esc(o.text)}</textarea>`:`<input id="f-label" data-f="label" value="${esc(o.label||'')}" placeholder="${esc(typeName(o))}" maxlength="60">`);
-  if(o.type==='room'){const lens=edgeLens(o),b=bbox(o.pts),others=sharedWalls(o),doors=cur.objects.filter(d=>d.type==='door'&&onEdgeOf(o,[d.x,d.y],(o.t||5)/2+1)>=0);
+  if(o.type==='room'){const lens=edgeLens(o),b=bbox(o.outline&&(o.omeasure||'outside')==='outside'?inset(o.pts,-(o.t||5)/2):o.pts),others=sharedWalls(o),doors=cur.objects.filter(d=>d.type==='door'&&onEdgeOf(o,[d.x,d.y],(o.t||5)/2+1)>=0);
+    const ost=o.outline?outlineStats(o):null;
+    h+=`<label class="chk"><input type="checkbox" id="f-outline" data-f="outline"${o.outline?' checked':''}> This is the outside of the house</label>`;
+    if(ost)h+=`<div class="sec"><h3>House</h3><div class="stat"><span>Inside the outer walls</span><span>${fmtArea(ost.tot)}</span></div><div class="stat"><span>In ${ost.n} room${ost.n===1?'':'s'}</span><span>${fmtArea(ost.used)}</span></div>
+      <div class="stat"><span><b>Left for halls, stairs, closets and inner walls</b></span><span><b>${fmtArea(ost.left)}</b></span></div>
+      <p class="note">Place rooms inside the outline at their sizes. The shaded space that’s left is your halls and closets.</p>
+      ${fld('Wall lengths are measured on','f-omeasure',`<select id="f-omeasure" data-f="omeasure"><option value="outside"${(o.omeasure||'outside')==='outside'?' selected':''}>Outside of the house</option><option value="inside"${o.omeasure==='inside'?' selected':''}>Inside face of the outer walls</option></select>`)}</div>`;
     h+=`<div class="sec"><h3>Size</h3><div class="stat"><span>Floor area</span><span>${fmtArea(roomArea(o))}</span></div><div class="stat"><span>Overall</span><span>${fmtLen(b[2]-b[0])} × ${fmtLen(b[3]-b[1])}</span></div>
-      <span class="lbl">Wall lengths (${S().measure==='inside'?'inside':'centerline'})</span><div class="walls">${lens.map((L,i)=>`<div class="wrow"><b>${String.fromCharCode(65+i)}</b><input id="f-edge${i}" data-f="edge" data-i="${i}" value="${esc(fmtInput(L))}" aria-label="Wall ${String.fromCharCode(65+i)} length" autocomplete="off" enterkeyhint="done"${lockA({o:o.id,e:i})}><button class="btn" data-act="split" data-i="${i}" title="Add a corner in the middle of this wall"${dimOn({o:o.id,e:i})?' disabled':''}>Split</button>${o.pts.length>3?`<button class="btn" data-act="merge" data-i="${i}" title="Remove the corner at the end of this wall">Join</button>`:'<span></span>'}</div>`).join('')}</div>
+      <span class="lbl">Wall lengths (${o.outline?((o.omeasure||'outside')==='outside'?'outside':'inside'):S().measure==='inside'?'inside':'centerline'})</span><div class="walls">${lens.map((L,i)=>`<div class="wrow"><b>${String.fromCharCode(65+i)}</b><input id="f-edge${i}" data-f="edge" data-i="${i}" value="${esc(fmtInput(L))}" aria-label="Wall ${String.fromCharCode(65+i)} length" autocomplete="off" enterkeyhint="done"${lockA({o:o.id,e:i})}><button class="btn" data-act="split" data-i="${i}" title="Add a corner in the middle of this wall"${dimOn({o:o.id,e:i})?' disabled':''}>Split</button>${o.pts.length>3?`<button class="btn" data-act="merge" data-i="${i}" title="Remove the corner at the end of this wall">Join</button>`:'<span></span>'}</div>`).join('')}</div>
       <div class="row">${fld('Wall thickness','f-wt',smallIn('f-wt','wt',o.t||5))}<span></span></div>
       <label class="chk"><input type="checkbox" id="f-showarea" data-f="showarea"${o.showArea!==false?' checked':''}> Show area on plan</label></div>`;
     h+=colorBlock(o);
@@ -1798,9 +1814,11 @@ insp.addEventListener('change',e=>{const el=e.target,f=el.dataset.f;
   checkpoint();
   switch(f){
     case 'edge':{const i=+el.dataset.i;if(sdBlocked({o:o.id,e:i})){undoS.pop();renderInspector();return;}const L=parseLen(el.value,0,refV);if(!(L>1))return bad();
-      if(hasGeomDims()){if(!sdCheckTyped(undoS[undoS.length-1],[{kind:'len',ref:{o:o.id,e:i},value:L,mode:S().measure}],new Set([o.pts[i]])))return;}else setEdgeLen(o,i,L);break;}
+      if(hasGeomDims()){if(!sdCheckTyped(undoS[undoS.length-1],[{kind:'len',ref:{o:o.id,e:i},value:L,mode:o.outline?(o.omeasure||'outside'):S().measure}],new Set([o.pts[i]])))return;}else setEdgeLen(o,i,L);break;}
     case 'wt':{const L=parseLen(el.value,'small',refV);if(!(L>0&&L<48))return bad();o.t=F(L);if(hasGeomDims()&&!sdCheckTyped(undoS[undoS.length-1]))return;break;}
     case 'showarea':o.showArea=el.checked;break;
+    case 'outline':o.outline=el.checked;if(o.outline){if(!o.label||/^Room \d+$/.test(o.label))o.label='House outline';o.t=Math.max(o.t||5,6);o.z=minZ()-1;cur.objects=[o].concat(cur.objects.filter(x=>x!==o));}break;
+    case 'omeasure':o.omeasure=el.value;break;
     case 'fw':{if(sdBlocked({o:o.id,f:'w'})){undoS.pop();renderInspector();return;}const L=parseLen(el.value,0,refV);if(!(L>0))return bad();o.w=F(L);break;}
     case 'fh':{if(sdBlocked({o:o.id,f:'h'})){undoS.pop();renderInspector();return;}const L=parseLen(el.value,0,refV);if(!(L>0))return bad();o.h=F(L);break;}
     case 'rot':{const n=num(el.value);if(n==null)return bad();o.rot=normAng(n);break;}
@@ -1831,6 +1849,10 @@ insp.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(!b)r
     case 'import':runImport();return;
     case 'psave':saveNow();renderInspector();return;
     case 'fpiopen':fpiOpen();return;
+    case 'addoutline':{const r=stageRect(),c=toWorld(r.left+r.width/2,r.top+r.height/2),G=6,x0=Math.round((c[0]-243)/G)*G,y0=Math.round((c[1]-183)/G)*G,t=6;
+      const ol={id:rid(),type:'room',label:'House outline',color:'#b4c2cc',t,outline:true,omeasure:'outside',pts:[[x0,y0],[x0+480-t,y0],[x0+480-t,y0+360-t],[x0,y0+360-t]]};
+      checkpoint();ol.z=minZ()-1;cur.objects.unshift(ol);sel=ol.id;libOpen=false;setSheet(true);changed();fitView();
+      setTimeout(()=>{const e=$('#f-edge0');if(e){e.focus();e.select();}},60);toast('Type the outside length of each wall. Use Split to add corners for an L shape.',3600);return;}
     case 'bgdel':setBg(null);toast('Picture removed');return;
     case 'fs':{const d=document,el=d.documentElement;const on=d.fullscreenElement||d.webkitFullscreenElement;
       const pr=on?(d.exitFullscreen||d.webkitExitFullscreen).call(d):(el.requestFullscreen||el.webkitRequestFullscreen).call(el);Promise.resolve(pr).then(()=>setTimeout(()=>{renderInspector();fitView();},150)).catch(()=>toast('Full screen isn’t available here'));return;}
@@ -1885,7 +1907,8 @@ $('#insp-head').addEventListener('click',()=>{if(matchMedia('(max-width:760px)')
 
 // delete an object; a room takes everything inside it (doors on a wall it shares with another room stay)
 function removeObj(o){const gone=new Set([o]);
-  if(o.type==='room'){const others=cur.objects.filter(x=>x.type==='room'&&x!==o);
+  if(o.type==='room'&&o.outline){for(const d of cur.objects)if(d.type==='door'&&onEdgeOf(o,[d.x,d.y],1)>=0&&!cur.objects.some(r=>r!==o&&r.type==='room'&&onEdgeOf(r,[d.x,d.y],1)>=0))gone.add(d);}
+  else if(o.type==='room'){const others=cur.objects.filter(x=>x.type==='room'&&x!==o);
     for(const a of attachedTo(o)){if(a.type==='door'&&others.some(r=>onEdgeOf(r,[a.x,a.y],1)>=0))continue;gone.add(a);}
     for(const x of cur.objects){if((x.type==='wall'||x.type==='dim')&&inPoly(V.mul(V.add(x.a,x.b),0.5),o.pts)&&!others.some(r=>inPoly(V.mul(V.add(x.a,x.b),0.5),r.pts)))gone.add(x);}}
   checkpoint();cur.objects=cur.objects.filter(x=>!gone.has(x));if(sel&&!get(sel))sel=null;changed();
