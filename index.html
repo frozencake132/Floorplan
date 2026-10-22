@@ -343,7 +343,7 @@ const HINTS={
   pan:'Drag to pan · pinch or scroll to zoom',
   room:'Drag a rectangle to draw a room',
   poly:'Tap each corner · tap the first corner to close the room',
-  wall:'Drag to draw a wall',
+  wall:'Drag to draw a wall · drag the middle handle to curve it',
   door:'Tap a wall to put a door there',
   window:'Tap a wall to put a window there',
   text:'Tap where the label should go',
@@ -579,11 +579,52 @@ function updateUndo(){for(const[id,st]of[['#undo',undoS],['#redo',redoS]]){const
 function stageRect(){return svg.getBoundingClientRect();}
 function toWorld(cx,cy){const r=stageRect();return[(cx-r.left-view.x)/view.s,(cy-r.top-view.y)/view.s];}
 function zoomAt(sx,sy,f){const ns=Math.max(0.12,Math.min(40,view.s*f));const wx=(sx-view.x)/view.s,wy=(sy-view.y)/view.s;view.s=ns;view.x=sx-wx*ns;view.y=sy-wy*ns;render();}
-function objPoints(o){const pts=[];if(o.type==='sdim'){const g=sdGeom(o,view.s);if(!g)return pts;return g.kind==='lin'?[g.A,g.B,g.T]:[g.C,g.T];}switch(o.type){case 'room':case 'pen':pts.push(...o.pts);break;case 'wall':pts.push(o.a,o.b);break;
+// ---------- wall network: every wall and room side joined into clean junctions ----------
+// Curved walls: a wall with bend = how far its middle bows out from the straight line (inches, signed).
+function arcInfo(a,b,bend){const L=V.dist(a,b),u=V.norm(V.sub(b,a)),n=[-u[1],u[0]],mid=V.mul(V.add(a,b),0.5),M=V.add(mid,V.mul(n,bend)),s=Math.abs(bend),R=(L*L/4+s*s)/(2*s),
+  C=V.add(mid,V.mul(n,bend-Math.sign(bend)*R)),ta=Math.atan2(a[1]-C[1],a[0]-C[0]),tm=Math.atan2(M[1]-C[1],M[0]-C[0]);let d=tm-ta;while(d>Math.PI)d-=2*Math.PI;while(d<=-Math.PI)d+=2*Math.PI;
+  return{C,R,ta,sweep:2*d,M,len:R*Math.abs(2*d)};}
+const arcPt=(I,u)=>{const th=I.ta+I.sweep*u;return[I.C[0]+I.R*Math.cos(th),I.C[1]+I.R*Math.sin(th)];};
+const arcDir=(I,u)=>{const th=I.ta+I.sweep*u,sg=Math.sign(I.sweep)||1;return[-Math.sin(th)*sg,Math.cos(th)*sg];};
+const isCurved=o=>o.type==='wall'&&Math.abs(o.bend||0)>0.05&&V.dist(o.a,o.b)>0.5;
+function wallMid(o){return isCurved(o)?arcInfo(o.a,o.b,o.bend).M:V.mul(V.add(o.a,o.b),0.5);}
+function wallLen(o){return isCurved(o)?arcInfo(o.a,o.b,o.bend).len:V.dist(o.a,o.b);}
+function lineX(p1,d1,p2,d2){const cr=d1[0]*d2[1]-d1[1]*d2[0];if(Math.abs(cr)<1e-6)return null;const w=V.sub(p2,p1),s=(w[0]*d2[1]-w[1]*d2[0])/cr;return V.add(p1,V.mul(d1,s));}
+function wallNet(objs){const raw=[];
+  for(const o of objs){if(o.type==='room'){const n=o.pts.length;for(let i=0;i<n;i++){const a=o.pts[i],b=o.pts[(i+1)%n];if(V.dist(a,b)>0.05)raw.push({a,b,t:o.t||5,color:null,src:o});}}
+    else if(o.type==='wall'&&V.dist(o.a,o.b)>0.05)raw.push({a:o.a,b:o.b,t:o.t||5,color:o.color||null,src:o,bend:isCurved(o)?o.bend:0});}
+  const nodes=[],nodeAt=p=>{for(const n of nodes)if(Math.abs(n.p[0]-p[0])<0.6&&Math.abs(n.p[1]-p[1])<0.6)return n;const n={id:nodes.length,p:[p[0],p[1]],ends:[]};nodes.push(n);return n;};
+  for(const s of raw){nodeAt(s.a);nodeAt(s.b);}
+  // split straight walls wherever another wall ends on them, so T-junctions and overlapping room sides join properly
+  const pieces=[];
+  for(const s of raw){if(s.bend){pieces.push(s);continue;}const d=V.sub(s.b,s.a),L=V.len(d),u=V.mul(d,1/L),cuts=[];
+    for(const n of nodes){const w=V.sub(n.p,s.a),t=V.dot(w,u);if(t<=0.6||t>=L-0.6)continue;if(Math.abs(w[0]*u[1]-w[1]*u[0])<0.6)cuts.push(t);}
+    cuts.sort((x,y)=>x-y);let prev=s.a;for(const t of cuts){const p=V.add(s.a,V.mul(u,t));pieces.push(Object.assign({},s,{a:prev,b:p}));prev=p;}pieces.push(Object.assign({},s,{a:prev,b:s.b}));}
+  const seen=new Map(),segs=[];
+  for(const s of pieces){const A=nodeAt(s.a),B=nodeAt(s.b);if(A===B)continue;
+    if(!s.bend){const k=Math.min(A.id,B.id)+'-'+Math.max(A.id,B.id),e=seen.get(k);if(e){e.t=Math.max(e.t,s.t);if(!s.color)e.color=null;continue;}seen.set(k,s);}
+    s.A=A;s.B=B;segs.push(s);}
+  for(const s of segs){let dA,dB,len;if(s.bend){s.arc=arcInfo(A_(s),B_(s),s.bend);dA=arcDir(s.arc,0);dB=V.mul(arcDir(s.arc,1),-1);len=s.arc.len;}else{dA=V.norm(V.sub(s.B.p,s.A.p));dB=V.mul(dA,-1);len=V.dist(s.A.p,s.B.p);}
+    s.eA={dir:dA,h:s.t/2,len};s.eB={dir:dB,h:s.t/2,len};s.A.ends.push(s.eA);s.B.ends.push(s.eB);}
+  const Ln=d=>[-d[1],d[0]],Rn=d=>[d[1],-d[0]];
+  for(const n of nodes){const E=n.ends;if(!E.length)continue;for(const e of E)e.ang=Math.atan2(e.dir[1],e.dir[0]);E.sort((p,q)=>p.ang-q.ang);
+    if(E.length===1){const e=E[0],back=V.mul(e.dir,-e.h);e.left=V.add(V.add(n.p,V.mul(Ln(e.dir),e.h)),back);e.right=V.add(V.add(n.p,V.mul(Rn(e.dir),e.h)),back);continue;}
+    for(let i=0;i<E.length;i++){const a=E[i],b=E[(i+1)%E.length],pa=V.add(n.p,V.mul(Ln(a.dir),a.h)),pb=V.add(n.p,V.mul(Rn(b.dir),b.h)),X=lineX(pa,a.dir,pb,b.dir);
+      const along=(e)=>{const t=V.dot(V.sub(X,n.p),e.dir);return t>=-2.2*e.h&&t<=Math.max(e.h,e.len*0.5);};
+      if(X&&V.dist(X,n.p)<=3*Math.max(a.h,b.h)&&along(a)&&along(b)){a.left=X;b.right=X;}else{a.left=pa;b.right=pb;}}}
+  return{segs,nodes};}
+function A_(s){return s.A.p;}function B_(s){return s.B.p;}
+// outline of one wall piece and of each junction hub
+function wallShape(s){const A=s.eA,B=s.eB;if(!s.bend)return[A.left,B.right,B.left,A.right];
+  const I=s.arc,n=Math.max(8,Math.min(64,Math.ceil(I.len/6))),Lp=[],Rp=[];
+  for(let k=0;k<=n;k++){const u=k/n,p=arcPt(I,u),d=arcDir(I,u),l=[-d[1],d[0]];Lp.push(V.add(p,V.mul(l,s.t/2)));Rp.push(V.sub(p,V.mul(l,s.t/2)));}
+  Lp[0]=A.left;Rp[0]=A.right;Lp[n]=B.right;Rp[n]=B.left;return Lp.concat(Rp.reverse());}
+function hubShape(n){if(n.ends.length<2)return null;const pts=[];for(const e of n.ends){pts.push(e.right,e.left);}return pts;}
+function objPoints(o){const pts=[];if(o.type==='sdim'){const g=sdGeom(o,view.s);if(!g)return pts;return g.kind==='lin'?[g.A,g.B,g.T]:[g.C,g.T];}switch(o.type){case 'room':case 'pen':pts.push(...o.pts);break;case 'wall':pts.push(o.a,o.b);if(isCurved(o))pts.push(wallMid(o));break;
   case 'dim':{const u=V.norm(V.sub(o.b,o.a)),n=[-u[1],u[0]];pts.push(o.a,o.b,V.add(o.a,V.mul(n,o.off||0)),V.add(o.b,V.mul(n,o.off||0)));break;}
   case 'furn':pts.push(...furnCorners(o));break;case 'door':pts.push([o.x-o.w/2,o.y-o.w/2],[o.x+o.w/2,o.y+o.w/2]);break;
   case 'text':{const w=(o.text||'').length*(o.size||12)*0.3;pts.push([o.x-w,o.y-(o.size||12)],[o.x+w,o.y+(o.size||12)]);break;}}return pts;}
-function contentBounds(){const pts=[];for(const o of cur.objects){switch(o.type){case 'room':case 'pen':pts.push(...o.pts);break;case 'wall':pts.push(o.a,o.b);break;
+function contentBounds(){const pts=[];for(const o of cur.objects){switch(o.type){case 'room':case 'pen':pts.push(...o.pts);break;case 'wall':pts.push(o.a,o.b);if(isCurved(o))pts.push(wallMid(o));break;
   case 'dim':{const u=V.norm(V.sub(o.b,o.a)),n=[-u[1],u[0]];pts.push(o.a,o.b,V.add(o.a,V.mul(n,o.off||0)),V.add(o.b,V.mul(n,o.off||0)));break;}
   case 'furn':pts.push(...furnCorners(o));break;case 'door':pts.push([o.x-o.w/2,o.y-o.w/2],[o.x+o.w/2,o.y+o.w/2]);break;
   case 'text':{const w=(o.text||'').length*(o.size||12)*0.3;pts.push([o.x-w,o.y-(o.size||12)],[o.x+w,o.y+(o.size||12)]);break;}}}
@@ -607,7 +648,7 @@ function alignSnap(mp,tg){const G=S().grid,thr=10/view.s;let bx=null,bdx=thr,by=
 function snapPoint(p,tg){if(!S().snap)return{p:[p[0],p[1]],g:[]};const thr=10/view.s;let best=null,bd=thr;
   for(const q of tg.pts){const d=V.dist(p,q);if(d<bd){bd=d;best=q;}}
   if(best)return{p:[best[0],best[1]],g:[{pt:best}]};const r=alignSnap([p],tg);return{p:[p[0]+r.dx,p[1]+r.dy],g:r.g};}
-function hostEdges(){const E=[];for(const o of cur.objects){if(o.type==='room'){const n=o.pts.length;for(let i=0;i<n;i++)E.push({a:o.pts[i],b:o.pts[(i+1)%n],t:o.t||5});}else if(o.type==='wall')E.push({a:o.a,b:o.b,t:o.t||5});}return E;}
+function hostEdges(){const E=[];for(const o of cur.objects){if(o.type==='room'){const n=o.pts.length;for(let i=0;i<n;i++)E.push({a:o.pts[i],b:o.pts[(i+1)%n],t:o.t||5});}else if(o.type==='wall'&&!isCurved(o))E.push({a:o.a,b:o.b,t:o.t||5});}return E;}
 function hostSnap(p,w){const thr=Math.max(24/view.s,8);let best=null,bd=thr;
   for(const e of hostEdges()){const r=projSeg(p,e.a,e.b);const d=V.dist(p,r.q);if(d<bd){bd=d;best={e,r};}}
   if(!best)return null;const e=best.e,r=best.r;const u=V.norm(V.sub(e.b,e.a));let along=r.t*r.L;
@@ -702,10 +743,14 @@ function scene(K,sc,live){const px=v=>v/sc;const objs=cur.objects;let s='';const
     const fs=Math.min(px(12),Math.min(o.w,o.h)*0.24);
     if(fs*sc>=6.5&&o.label&&!isStair){const ra=readable(o.rot||0)-(o.rot||0);s+=`<text transform="rotate(${F(ra)})" text-anchor="middle" dominant-baseline="central" style="font-family:${K.hand};font-size:${F(fs)}px;fill:${K.ink};pointer-events:none">${esc(o.label)}</text>`;}
     s+='</g>';}
-  for(const r of rooms)s+=`<polygon${di(r)} points="${P(r.pts)}" style="fill:none;stroke:${K.wall};stroke-width:${F(r.t||5)};stroke-linejoin:miter;stroke-miterlimit:4"/>`;
+  // all wall pieces of one color are drawn as a single shape (same winding), so joints show no seams
+  const net=wallNet(objs),byCol=new Map(),addPoly=(col,pts)=>{if(!pts||pts.length<3)return;const q=polyArea(pts)<0?pts.slice().reverse():pts;byCol.set(col,(byCol.get(col)||'')+'M'+q.map(p=>F(p[0])+' '+F(p[1])).join('L')+'Z');};
+  for(const sg of net.segs)addPoly(sg.color||K.wall,wallShape(sg));for(const n of net.nodes)addPoly(K.wall,hubShape(n));
+  for(const[col,d]of byCol)s+=`<path d="${d}" style="fill:${col};fill-rule:nonzero;pointer-events:none"/>`;
   const walls=objs.filter(o=>o.type==='wall');
-  for(const c of wallChains(walls))s+=`<path d="M${c.pts.map(p=>F(p[0])+' '+F(p[1])).join('L')}${c.closed?'Z':''}" style="fill:none;stroke:${c.color||K.wall};stroke-width:${F(c.t)};stroke-linecap:square;stroke-linejoin:miter;stroke-miterlimit:4;pointer-events:none"/>`;
-  if(live)for(const w of walls)s+=`<line data-id="${w.id}" x1="${F(w.a[0])}" y1="${F(w.a[1])}" x2="${F(w.b[0])}" y2="${F(w.b[1])}" style="stroke:transparent;stroke-width:${F(Math.max(w.t||5,px(18)))}"/>`;
+  if(live){for(const r of rooms)s+=`<polygon data-id="${r.id}" points="${P(r.pts)}" style="fill:none;stroke:transparent;stroke-width:${F(Math.max(r.t||5,px(14)))}"/>`;
+    for(const w of walls){if(isCurved(w)){const I=arcInfo(w.a,w.b,w.bend),pts=[];for(let k=0;k<=24;k++)pts.push(arcPt(I,k/24));s+=`<polyline data-id="${w.id}" points="${P(pts)}" style="fill:none;stroke:transparent;stroke-width:${F(Math.max(w.t||5,px(18)))}"/>`;}
+      else s+=`<line data-id="${w.id}" x1="${F(w.a[0])}" y1="${F(w.a[1])}" x2="${F(w.b[0])}" y2="${F(w.b[1])}" style="stroke:transparent;stroke-width:${F(Math.max(w.t||5,px(18)))}"/>`;}}
   for(const d of objs.filter(o=>o.type==='door')){const t=d.t||5,w=d.w,sg=d.swing||1,hg=d.hinge||1,lw=`stroke:${K.ink};stroke-width:${F(px(1.6))};fill:none`,thin=`stroke:${K.ink};stroke-width:${F(px(1))};fill:none;stroke-dasharray:${F(px(3))} ${F(px(2))}`;
     s+=`<g${di(d)} transform="translate(${F(d.x)} ${F(d.y)}) rotate(${F(d.ang)})"><rect x="${F(-w/2)}" y="${F(-t/2-px(1))}" width="${F(w)}" height="${F(t+px(2))}" style="fill:${K.sheet}"/>`;
     const leaf=(hx,len,dir)=>{const y0=sg*t/2,ly=sg*(t/2+len),cx=hx+dir*len,sweep=((dir>0)===(sg>0))?0:1;
@@ -741,8 +786,8 @@ function scene(K,sc,live){const px=v=>v/sc;const objs=cur.objects;let s='';const
     for(let i=0;i<n;i++){const a=r.pts[i],bb=r.pts[(i+1)%n],L=V.dist(a,bb);if(L*sc<(isSel?30:46))continue;if(dimOn({o:r.id,e:i}))continue;const u=V.norm(V.sub(bb,a));
       const nin=sg>0?[-u[1],u[0]]:[u[1],-u[0]];const m=V.add(V.mul(V.add(a,bb),0.5),V.mul(nin,(r.t||5)/2+px(9)));const ang=readable(Math.atan2(u[1],u[0])/deg);
       s+=`<text x="${F(m[0])}" y="${F(m[1])}" transform="rotate(${F(ang)} ${F(m[0])} ${F(m[1])})" text-anchor="middle" dominant-baseline="central" style="font-family:${K.mono};font-size:${F(px(10.5))}px;fill:${isSel?K.accent:K.muted};font-weight:${isSel?600:400};pointer-events:none;${halo(K,px)}">${isSel?String.fromCharCode(65+i)+' · ':''}${esc(fmtLen(lens[i]))}</text>`;}}
-  for(const w of objs.filter(o=>o.type==='wall')){if(!(S().dims||(live&&w.id===sel)))continue;const L=V.dist(w.a,w.b);if(L*sc<46)continue;
-    const u=V.norm(V.sub(w.b,w.a)),n=[-u[1],u[0]],m=V.add(V.mul(V.add(w.a,w.b),0.5),V.mul(n,-((w.t||5)/2+px(9)))),ang=readable(Math.atan2(u[1],u[0])/deg);
+  for(const w of objs.filter(o=>o.type==='wall')){if(!(S().dims||(live&&w.id===sel)))continue;const L=wallLen(w);if(L*sc<46)continue;
+    const u=V.norm(V.sub(w.b,w.a)),cv=isCurved(w),n=[-u[1],u[0]],sd=cv?(w.bend>0?1:-1):-1,m=V.add(wallMid(w),V.mul(n,sd*((w.t||5)/2+px(9)))),ang=readable(Math.atan2(u[1],u[0])/deg);
     s+=`<text x="${F(m[0])}" y="${F(m[1])}" transform="rotate(${F(ang)} ${F(m[0])} ${F(m[1])})" text-anchor="middle" dominant-baseline="central" style="font-family:${K.mono};font-size:${F(px(10.5))}px;fill:${K.muted};pointer-events:none;${halo(K,px)}">${esc((w.label?w.label+' · ':'')+fmtLen(L))}</text>`;}
   for(const d of objs.filter(o=>o.type==='sdim'))s+=sdMarkup(d,K,sc,live);
   return s;}
@@ -759,8 +804,9 @@ function overlay(){const K=LIVE,sc=view.s,px=v=>v/sc,HR=(COARSE?11:6.5)/sc,A=K.a
     else if(o.type==='furn'){const c=furnCorners(o);s+=`<polygon points="${P(c)}" style="${dash}"/>`;if(!lk){c.forEach((p,i)=>s+=hc('c'+i,p[0],p[1],HR*0.85,true));
       const top=V.add([o.x,o.y],V.rot([0,-o.h/2-px(30)],(o.rot||0)*deg)),tm=V.add([o.x,o.y],V.rot([0,-o.h/2],(o.rot||0)*deg));
       s+=`<line x1="${F(tm[0])}" y1="${F(tm[1])}" x2="${F(top[0])}" y2="${F(top[1])}" style="stroke:${A};stroke-width:${F(px(1.5))};pointer-events:none"/>`+hc('rot',top[0],top[1],HR);}}
-    else if(o.type==='wall'||o.type==='dim'){s+=`<line x1="${F(o.a[0])}" y1="${F(o.a[1])}" x2="${F(o.b[0])}" y2="${F(o.b[1])}" style="${dash}"/>`;
-      if(!lk){s+=hc('a',o.a[0],o.a[1],HR)+hc('b',o.b[0],o.b[1],HR);if(o.type==='dim'){const u=V.norm(V.sub(o.b,o.a)),n=[-u[1],u[0]],m=V.add(V.mul(V.add(o.a,o.b),0.5),V.mul(n,o.off||0));s+=hc('off',m[0],m[1],HR*0.8,true);}}}
+    else if(o.type==='wall'||o.type==='dim'){if(isCurved(o)){const I=arcInfo(o.a,o.b,o.bend),pts=[];for(let k=0;k<=32;k++)pts.push(arcPt(I,k/32));s+=`<polyline points="${P(pts)}" style="${dash}"/>`;}
+      else s+=`<line x1="${F(o.a[0])}" y1="${F(o.a[1])}" x2="${F(o.b[0])}" y2="${F(o.b[1])}" style="${dash}"/>`;
+      if(!lk){s+=hc('a',o.a[0],o.a[1],HR)+hc('b',o.b[0],o.b[1],HR);if(o.type==='wall'&&V.dist(o.a,o.b)*sc>40){const m=wallMid(o);s+=hc('bend',m[0],m[1],HR*0.85,true);}if(o.type==='dim'){const u=V.norm(V.sub(o.b,o.a)),n=[-u[1],u[0]],m=V.add(V.mul(V.add(o.a,o.b),0.5),V.mul(n,o.off||0));s+=hc('off',m[0],m[1],HR*0.8,true);}}}
     else if(o.type==='door'){const u=[Math.cos(o.ang*deg),Math.sin(o.ang*deg)],n=[-u[1],u[0]],t=(o.t||5)/2+px(4),c=[o.x,o.y];
       const cs=[[-1,-1],[1,-1],[1,1],[-1,1]].map(k=>V.add(c,V.add(V.mul(u,k[0]*o.w/2),V.mul(n,k[1]*t))));s+=`<polygon points="${P(cs)}" style="${dash}"/>`;
       if(!lk){const e1=V.add(c,V.mul(u,-o.w/2)),e2=V.add(c,V.mul(u,o.w/2));s+=hc('w0',e1[0],e1[1],HR*0.85,true)+hc('w1',e2[0],e2[1],HR*0.85,true);}}
@@ -780,6 +826,7 @@ function overlay(){const K=LIVE,sc=view.s,px=v=>v/sc,HR=(COARSE?11:6.5)/sc,A=K.a
     else if(g.x!=null)s+=`<line x1="${F(g.x)}" y1="${F(g.y1)}" x2="${F(g.x)}" y2="${F(g.y2)}" style="${gs}"/>`;
     else if(g.y!=null)s+=`<line x1="${F(g.x1)}" y1="${F(g.y)}" x2="${F(g.x2)}" y2="${F(g.y)}" style="${gs}"/>`;}
   const tag=(x,y,txt)=>`<text x="${F(x)}" y="${F(y)}" text-anchor="middle" dominant-baseline="central" style="font-family:${K.mono};font-size:${F(px(12))}px;font-weight:600;fill:${A};pointer-events:none;${halo(K,px)}">${esc(txt)}</text>`;
+  if(op&&op.kind==='handle'&&op.h==='bend'&&op.tip&&o){const m=wallMid(o);s+=tag(m[0],m[1]-px(24),op.tip);}
   const pv=`fill:${A};fill-opacity:.12;stroke:${A};stroke-width:${F(px(2))};pointer-events:none`;
   if(op&&op.kind==='rect'){const p=rectPts(op.a[0],op.a[1],op.b[0],op.b[1]);s+=`<polygon points="${P(p)}" style="${pv}"/>`;const w=Math.abs(op.b[0]-op.a[0]),h=Math.abs(op.b[1]-op.a[1]);
     if(w>0&&h>0)s+=tag((op.a[0]+op.b[0])/2,(op.a[1]+op.b[1])/2,fmtLen(w)+' × '+fmtLen(h));}
@@ -1562,6 +1609,9 @@ function doHandle(w){if(!op.pushed){pushPre(op.pre);op.pushed=true;}const h=op.h
       let nw=Math.max(2,loc[0]*sx),nh=Math.max(2,loc[1]*sy);const lw=dimOn({o:o.id,f:'w'}),lh=dimOn({o:o.id,f:'h'});if(lw)nw=lw.value;if(lh)nh=lh.value;const c=V.add(fixed,V.rot([sx*nw/2,sy*nh/2],(o.rot||0)*deg));o.w=F(nw);o.h=F(nh);o.x=c[0];o.y=c[1];}}
   else if(o.type==='wall'||o.type==='dim'){
     if(h==='off'){const u=V.norm(V.sub(o.b,o.a));o.off=F(V.dot(V.sub(w,o.a),[-u[1],u[0]]));}
+    else if(o.type==='wall'&&h==='bend'){const L=V.dist(o.a,o.b),u=V.norm(V.sub(o.b,o.a)),n=[-u[1],u[0]],mid=V.mul(V.add(o.a,o.b),0.5);let b=V.dot(V.sub(w,mid),n);
+      if(Math.abs(b)<10/view.s)b=0;else if(S().snap)b=Math.round(b*2)/2;o.bend=Math.max(-L,Math.min(L,b));if(!o.bend)delete o.bend;
+      const m=wallMid(o);g=[{pt:m}];op.tip=o.bend?`Curve ${fmtLen(Math.abs(o.bend))} · radius ${fmtLen(arcInfo(o.a,o.b,o.bend).R)}`:'Straight';}
     else if(o.type==='wall'){const sp=snapWall(w,op.tg,o[h==='a'?'b':'a']);o[h]=sp.p;g=sp.g;applyJoints(op.joints,o);}
     else{const sp=snapPoint(w,op.tg);o[h]=sp.p;g=sp.g;}}
   else if(o.type==='door'){if(dimOn({o:o.id,f:'dw'})){if(!op.warned){op.warned=true;toast(sdBlockMsg(dimOn({o:o.id,f:'dw'})));}return;}const u=[Math.cos(o.ang*deg),Math.sin(o.ang*deg)];let half=Math.abs(V.dot(V.sub(w,[o.x,o.y]),u));o.w=Math.max(12,Math.round(half*2));}
@@ -1705,8 +1755,11 @@ function objPanel(o){if(o.type==='sdim')return sdimPanel(o);let h=fld(o.type==='
     const li=o.libId&&libItem(o.libId);
     h+=`<div class="sec"><h3>My furniture</h3>${li?`<p class="note">This is a copy of “${esc(li.name)}”${placedCount(li.id)>1?`, placed ${placedCount(li.id)} times in this plan`:''}.</p><div class="btns"><button class="btn primary" data-act="placemore">Place more</button><button class="btn" data-act="updlib">Save changes to the saved item</button></div>`
       :`<p class="note">Save this piece to reuse it in any plan, or keep placing copies.</p><div class="btns"><button class="btn primary" data-act="savelib">Save to My furniture</button><button class="btn" data-act="placemore">Place more</button></div>`}</div>`;}
-  else if(o.type==='wall'){const L=V.dist(o.a,o.b),ang=normAng(Math.atan2(o.b[1]-o.a[1],o.b[0]-o.a[0])/deg);
-    h+=`<div class="row">${fld('Length','f-len',lenIn('f-len','len',L,lockA({o:o.id})))}${fld('Thickness','f-wt',smallIn('f-wt','wt',o.t||5))}</div>${fld('Angle°','f-ang',`<input id="f-ang" class="num" data-f="ang" inputmode="decimal" value="${F(ang)}">`)}`+colorBlock(o);}
+  else if(o.type==='wall'){const L=V.dist(o.a,o.b),ang=normAng(Math.atan2(o.b[1]-o.a[1],o.b[0]-o.a[0])/deg),cv=isCurved(o),I=cv?arcInfo(o.a,o.b,o.bend):null;
+    h+=`<div class="row">${fld(cv?'Span (straight across)':'Length','f-len',lenIn('f-len','len',L,lockA({o:o.id})))}${fld('Thickness','f-wt',smallIn('f-wt','wt',o.t||5))}</div>${fld('Angle°','f-ang',`<input id="f-ang" class="num" data-f="ang" inputmode="decimal" value="${F(ang)}">`)}`+
+      `<div class="sec"><h3>Curve</h3><div class="row">${fld('Curve depth','f-bend',lenIn('f-bend','bend',Math.abs(o.bend||0)))}${cv?'<button class="btn" data-act="bendflip">Flip</button>':''}</div>
+      ${cv?`<div class="stat"><span>Length along the curve</span><span>${fmtLen(I.len)}</span></div><div class="stat"><span>Radius</span><span>${fmtLen(I.R)}</span></div><div class="btns"><button class="btn" data-act="bendoff">Make straight</button><button class="btn" data-act="bendhalf">Half circle</button></div>`
+        :'<p class="note">Drag the square handle in the middle of the wall to curve it, or type how far the middle should bow out.</p>'}</div>`+colorBlock(o);}
   else if(o.type==='door'){const rs=doorRooms(o);
     h+=fld('Type','f-kind',`<select id="f-kind" data-f="kind">${Object.entries(DOOR_KINDS).map(k=>`<option value="${k[0]}"${o.kind===k[0]?' selected':''}>${k[1]}</option>`).join('')}</select>`)+
       `<div class="row">${fld('Width','f-dw',lenIn('f-dw','dw',o.w,lockA({o:o.id,f:'dw'})))}${fld('Rotation°','f-dang',`<input id="f-dang" class="num" data-f="dang" inputmode="decimal" value="${F(o.ang)}">`)}</div>`+
@@ -1754,6 +1807,7 @@ insp.addEventListener('change',e=>{const el=e.target,f=el.dataset.f;
     case 'shape':o.kind=el.value;break;
     case 'run':{const L=parseLen(el.value,'small',refV);if(!(L>=4&&L<=24))return bad();o.run=F(L);break;}
     case 'stlbl':o.dirLabel=el.value;break;
+    case 'bend':{const L=parseLen(el.value,0,Math.abs(o.bend||0)||V.dist(o.a,o.b)/4);if(L==null||L<0)return bad();const max=V.dist(o.a,o.b);o.bend=(o.bend<0?-1:1)*Math.min(max,L);if(Math.abs(o.bend)<0.05)delete o.bend;break;}
     case 'stfw':{const L=parseLen(el.value,0,refV);if(!(L>=12))return bad();o.fw=F(L);break;}
     case 'len':{if(o.type==='wall'&&sdBlocked({o:o.id})){undoS.pop();renderInspector();return;}const L=parseLen(el.value,0,refV);if(!(L>0))return bad();
       if(o.type==='wall'&&hasGeomDims()){if(!sdCheckTyped(undoS[undoS.length-1],[{kind:'len',ref:{o:o.id},value:L}],new Set([o.a])))return;break;}
@@ -1814,6 +1868,9 @@ insp.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(!b)r
     case 'back':o.z=minZ()-1;cur.objects=cur.objects.filter(x=>x!==o);cur.objects.unshift(o);break;
     case 'rot90':o.rot=normAng((o.rot||0)+90);break;
     case 'mirror':o.flip=!o.flip;break;
+    case 'bendflip':if(o.bend)o.bend=-o.bend;break;
+    case 'bendoff':delete o.bend;break;
+    case 'bendhalf':o.bend=(o.bend<0?-1:1)*V.dist(o.a,o.b)/2;break;
     case 'hinge':o.hinge=-(o.hinge||1);break;
     case 'swing':o.swing=-(o.swing||1);break;
     case 'penw':o.w=+b.dataset.w;break;
