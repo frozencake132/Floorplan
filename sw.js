@@ -1,5 +1,5 @@
 // Floorplan Sketchpad offline support. Bump VERSION when you upload new files.
-const VERSION = 'fps-v6';
+const VERSION = 'fps-v7';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './apple-touch-icon.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(CORE)));

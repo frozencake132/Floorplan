@@ -382,7 +382,7 @@ function inset(p,d){const n=p.length,sg=polyArea(p)>0?1:-1,L=[];
     if(Math.abs(cr)<1e-9){out.push(B.p);continue;}const w=V.sub(B.p,A.p);const s=(w[0]*B.u[1]-w[1]*B.u[0])/cr;out.push(V.add(A.p,V.mul(A.u,s)));}
   return out;}
 function inwardSign(p){return polyArea(p)>0?1:-1;}
-function edgeLens(r,mode){mode=mode||(r.outline?(r.omeasure||'outside'):S().measure);const q=mode==='inside'?inset(r.pts,(r.t||0)/2):mode==='outside'?inset(r.pts,-(r.t||0)/2):r.pts;const n=q.length;return q.map((a,i)=>V.dist(a,q[(i+1)%n]));}
+function edgeLens(r,mode){mode=mode||r.omeasure||(r.outline?'outside':S().measure);const q=mode==='inside'?inset(r.pts,(r.t||0)/2):mode==='outside'?inset(r.pts,-(r.t||0)/2):r.pts;const n=q.length;return q.map((a,i)=>V.dist(a,q[(i+1)%n]));}
 function roomArea(r){return Math.abs(polyArea(S().measure==='inside'||r.outline?inset(r.pts,(r.t||0)/2):r.pts));}
 function outlineStats(r){const inner=cur.objects.filter(x=>x.type==='room'&&!x.outline&&x!==r&&inPoly(labelPoint(x.pts),r.pts)),tot=roomArea(r),used=inner.reduce((a,x)=>a+roomArea(x),0);return{tot,used,left:Math.max(0,tot-used),n:inner.length,inner};}
 function projSeg(p,a,b){const ab=V.sub(b,a),L2=V.dot(ab,ab)||1;let t=V.dot(V.sub(p,a),ab)/L2;t=Math.max(0,Math.min(1,t));return{q:V.add(a,V.mul(ab,t)),t,L:Math.sqrt(L2)};}
