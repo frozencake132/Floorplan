@@ -1,11 +1,11 @@
 // Floorplan Sketchpad offline support. Bump VERSION when you upload new files.
-const VERSION = 'fps-v3';
+const VERSION = 'fps-v4';
 const CORE = ['./', './index.html', './manifest.webmanifest', './icon-192.png', './icon-512.png', './icon-maskable-512.png', './apple-touch-icon.png'];
 self.addEventListener('install', e => {
   e.waitUntil(caches.open(VERSION).then(c => c.addAll(CORE)));
 });
 self.addEventListener('activate', e => {
-  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== VERSION && k !== 'fps-fonts').map(k => caches.delete(k)))).then(() => self.clients.claim()));
+  e.waitUntil(caches.keys().then(keys => Promise.all(keys.filter(k => k !== VERSION && k !== 'fps-fonts' && k !== 'fps-libs').map(k => caches.delete(k)))).then(() => self.clients.claim()));
 });
 self.addEventListener('fetch', e => {
   const req = e.request;
@@ -17,6 +17,17 @@ self.addEventListener('fetch', e => {
       const hit = await c.match(req);
       const net = fetch(req).then(r => { if (r && (r.ok || r.type === 'opaque')) c.put(req, r.clone()); return r; }).catch(() => hit);
       return hit || net;
+    }));
+    return;
+  }
+  // Libraries loaded on demand (PDF reader, live sharing): keep a copy so they work offline next time.
+  if (url.hostname === 'cdnjs.cloudflare.com' || url.hostname === 'cdn.jsdelivr.net' || url.hostname === 'unpkg.com') {
+    e.respondWith(caches.open('fps-libs').then(async c => {
+      const hit = await c.match(req);
+      if (hit) return hit;
+      const r = await fetch(req);
+      if (r && (r.ok || r.type === 'opaque')) c.put(req, r.clone());
+      return r;
     }));
     return;
   }

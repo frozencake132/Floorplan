@@ -194,6 +194,23 @@ kbd{font:11px var(--f-mono);border:1px solid var(--line);border-bottom-width:2px
 
 /* modal + toast */
 .modal{position:fixed;inset:0;background:rgba(10,20,30,.45);display:grid;place-items:center;z-index:20;padding:16px}
+.dlg.wide{width:min(940px,100%)}
+.fpi-wrap{flex:none;background:#fff;border:1px solid var(--line);border-radius:8px;overflow:hidden;touch-action:manipulation}
+#fpi-cv{display:block;margin:0 auto;max-width:100%;cursor:crosshair}
+.dlg-b>*{flex-shrink:0}
+.drop{border:2px dashed var(--line);border-radius:10px;padding:32px 16px;display:flex;flex-direction:column;align-items:center;gap:10px;color:var(--muted);text-align:center}
+.drop.over{border-color:var(--accent);background:var(--accent-soft)}
+.tips{margin:0;padding-left:18px;display:flex;flex-direction:column;gap:4px;font-size:13px;line-height:1.45;color:var(--muted)}
+.fpi-busy{display:flex;align-items:center;justify-content:center;gap:12px;padding:44px 0;font:600 16px var(--f-cond);letter-spacing:.04em}
+.spin{width:20px;height:20px;border:2.5px solid var(--line);border-top-color:var(--accent);border-radius:50%;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.fpi-stats{margin:0;display:flex;flex-wrap:wrap;align-items:center;gap:6px 10px;font:600 14px var(--f-cond);letter-spacing:.03em}
+.k{display:inline-block;width:12px;height:12px;border-radius:3px;margin-right:-4px}
+.k-w{background:var(--accent)}.k-d{background:var(--sdim)}.k-n{background:var(--ok)}.k-o{background:var(--muted)}
+.note.err{color:var(--danger)}
+#bgimg{position:absolute;left:0;top:0;transform-origin:0 0;max-width:none;pointer-events:none;user-select:none;mix-blend-mode:multiply}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]) #bgimg{filter:invert(1) hue-rotate(180deg);mix-blend-mode:screen}}
+:root[data-theme="dark"] #bgimg{filter:invert(1) hue-rotate(180deg);mix-blend-mode:screen}
 .dlg{background:var(--panel);border:1px solid var(--line);border-radius:12px;box-shadow:var(--shadow);width:min(560px,100%);max-height:84%;display:flex;flex-direction:column;min-height:0}
 .dlg-h{display:flex;align-items:center;gap:8px;padding:14px 16px;border-bottom:1px solid var(--line)}
 .dlg-h h2{margin:0;font:700 18px var(--f-cond);letter-spacing:.04em;flex:1}
@@ -254,6 +271,7 @@ kbd{font:11px var(--f-mono);border:1px solid var(--line);border-bottom-width:2px
   <div class="main">
     <nav class="tools" id="tools" aria-label="Tools"></nav>
     <div class="stage" id="stage">
+      <img id="bgimg" alt="" hidden>
       <svg id="cv" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Floor plan drawing"></svg>
       <div class="hint" id="hint"></div>
       <div class="hist" role="group" aria-label="History">
@@ -276,6 +294,7 @@ kbd{font:11px var(--f-mono);border:1px solid var(--line);border-bottom-width:2px
 <div class="modal" id="modal" hidden></div>
 <div class="toast" id="toast" hidden></div>
 <input type="file" id="import-file" accept=".json,application/json" hidden>
+<input type="file" id="fpi-file" accept="image/*,.pdf,application/pdf" hidden>
 
 <script>
 (function(){
@@ -783,7 +802,7 @@ function gridMarkup(W,H){const s=view.s,metric=S().unit==='metric';
   return`<path d="${a}" style="stroke:var(--grid);stroke-width:1;fill:none" shape-rendering="crispEdges"/><path d="${b}" style="stroke:var(--grid-major);stroke-width:1;fill:none" shape-rendering="crispEdges"/>`;}
 
 function render(){if(raf)return;raf=requestAnimationFrame(()=>{raf=0;draw();});}
-function draw(){if(!cur)return;const r=stageRect(),W=Math.max(1,r.width),H=Math.max(1,r.height);svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
+function draw(){if(!cur)return;drawBg();const r=stageRect(),W=Math.max(1,r.width),H=Math.max(1,r.height);svg.setAttribute('viewBox',`0 0 ${W} ${H}`);
   const gh=liveGhosts(),real=cur.objects;if(gh)cur.objects=real.map(o=>gh[o.id]||o);let sceneS;try{sceneS=scene(LIVE,view.s,true);}finally{cur.objects=real;}
   svg.innerHTML=gridMarkup(W,H)+`<g transform="translate(${F(view.x)} ${F(view.y)}) scale(${view.s})">${sceneS}${overlay()}${peerOverlay()}</g>`;shPresenceTick();
   // scale bar
@@ -1111,6 +1130,228 @@ function p2pJoin(v){const m=String(v||'').trim().toLowerCase().match(/([a-z0-9]{
   plans[p.id]=p;openPlan(p.id);if(ex)delete plans[ex];persistLocal();toast('Joining… this can take a few seconds',2500);return true;}
 function p2pStopSharing(){if(!cur||cur.shared!=='p2p')return;shStop();delete cur.shared;delete cur.code;cur.updated=Date.now();plans[cur.id]=cur;persistLocal();setSync();updatePeopleUI();render();toast('Stopped sharing. Your copy stays here.');}
 
+// ---------- floor plan reader: picture or PDF -> walls, doors, windows ----------
+// Everything runs on the device. Walls are found as long thick dark strokes, straightened to
+// horizontal/vertical lines, joined at corners, and gaps in a wall line are read as doors (swing arc),
+// sliding doors, windows (thin lines across the gap) or plain openings. Furniture and text are ignored.
+function fpRuns(M,W,H){const N=W*H,rh=new Uint16Array(N),rv=new Uint16Array(N);
+  for(let y=0;y<H;y++){const o=y*W;let x=0;while(x<W){if(!M[o+x]){x++;continue;}let e=x;while(e<W&&M[o+e])e++;const L=Math.min(65535,e-x);for(let k=x;k<e;k++)rh[o+k]=L;x=e;}}
+  for(let x=0;x<W;x++){let y=0;while(y<H){if(!M[y*W+x]){y++;continue;}let e=y;while(e<H&&M[e*W+x])e++;const L=Math.min(65535,e-y);for(let k=y;k<e;k++)rv[k*W+x]=L;y=e;}}
+  return[rh,rv];}
+function fpMorph(M,W,H,r,dil){const N=W*H,t=new Uint8Array(N),o=new Uint8Array(N);
+  for(let y=0;y<H;y++){const b=y*W;let cnt=0;for(let x=0;x<Math.min(W,r);x++)cnt+=M[b+x];
+    for(let x=0;x<W;x++){if(x+r<W)cnt+=M[b+x+r];if(x-r-1>=0)cnt-=M[b+x-r-1];const n=Math.min(W-1,x+r)-Math.max(0,x-r)+1;t[b+x]=dil?(cnt>0?1:0):(cnt===n?1:0);}}
+  for(let x=0;x<W;x++){let cnt=0;for(let y=0;y<Math.min(H,r);y++)cnt+=t[y*W+x];
+    for(let y=0;y<H;y++){if(y+r<H)cnt+=t[(y+r)*W+x];if(y-r-1>=0)cnt-=t[(y-r-1)*W+x];const n=Math.min(H-1,y+r)-Math.max(0,y-r)+1;o[y*W+x]=dil?(cnt>0?1:0):(cnt===n?1:0);}}
+  return o;}
+function fpGrayDark(cv){const W=cv.width,H=cv.height,N=W*H,d=cv.getContext('2d',{willReadFrequently:true}).getImageData(0,0,W,H).data,g=new Uint8Array(N),hist=new Uint32Array(256);
+  const ok=new Uint8Array(N);let bad=0;
+  for(let i=0,j=0;i<N;i++,j+=4){if(d[j+3]<250){bad++;continue;}ok[i]=1;const l=0.299*d[j]+0.587*d[j+1]+0.114*d[j+2];const v=l<0?0:l>255?255:l|0;g[i]=v;hist[v]++;}
+  if(bad)for(let y=0;y<H;y++){const o=y*W;for(let x=0;x<W;){if(ok[o+x]){x++;continue;}let e=x;while(e<W&&!ok[o+e])e++;const L=x>0?g[o+x-1]:-1,R=e<W?g[o+e]:-1;
+    for(let k=x;k<e;k++)g[o+k]=L<0?(R<0?255:R):R<0?L:(k-x<e-k?L:R);x=e;}}
+  let acc=0,med=255;for(let v=0;v<256;v++){acc+=hist[v];if(acc>=(N-bad)/2){med=v;break;}}
+  if(med<110)for(let i=0;i<N;i++)g[i]=255-g[i]; // light lines on a dark background (blueprints)
+  const W1=W+1,I=new Float64Array(W1*(H+1));
+  for(let y=0;y<H;y++){let row=0;for(let x=0;x<W;x++){row+=g[y*W+x];I[(y+1)*W1+x+1]=I[y*W1+x+1]+row;}}
+  const r=Math.max(10,Math.round(Math.max(W,H)/40)),D=new Uint8Array(N);
+  for(let y=0;y<H;y++){const y0=Math.max(0,y-r),y1=Math.min(H,y+r+1);for(let x=0;x<W;x++){const x0=Math.max(0,x-r),x1=Math.min(W,x+r+1);
+    const mean=(I[y1*W1+x1]-I[y0*W1+x1]-I[y1*W1+x0]+I[y0*W1+x0])/((y1-y0)*(x1-x0)),v=g[y*W+x];
+    if(ok[y*W+x]&&(v<Math.min(60,mean*0.55)||(v<215&&v<mean-Math.max(14,mean*0.12))))D[y*W+x]=1;}}
+  return D;}
+// one full read of a picture: dark mask, wall thickness
+function fpPass(cv,closeR){const W=cv.width,H=cv.height,D=fpGrayDark(cv),Dw=closeR?fpMorph(fpMorph(D,W,H,closeR,true),W,H,closeR,false):D;
+  const[rh,rv]=fpRuns(Dw,W,H),ms=Math.max(W,H),minLen=ms/60,hist=new Float64Array(130);
+  for(let i=0;i<W*H;i++){if(!Dw[i])continue;const a=rh[i],b=rv[i],m=a<b?a:b,M=a<b?b:a;if(m>=128)continue;if(M>=Math.max(6*m,minLen))hist[m]+=m;}
+  const sm=new Float64Array(130);for(let m=1;m<129;m++)sm[m]=(hist[m-1]+2*hist[m]+hist[m+1])/4;
+  const minT=Math.max(3,Math.round(ms/450));let top=0,topM=0,T=0;for(let m=minT;m<128;m++)if(sm[m]>top){top=sm[m];topM=m;}
+  if(top>0)for(let m=Math.max(minT,Math.floor(topM/2.2));m<128;m++){if(sm[m]>=0.25*top&&sm[m]>=sm[m-1]&&sm[m]>=sm[m+1]){T=m;break;}}
+  const Dd=fpMorph(D,W,H,Math.max(1,Math.round((T||6)/4)),true);
+  return{cv,W,H,D,Dw,Dd,rh,rv,T,minT,closeR:closeR||0};}
+function fpComps(M,W,H,o,T,tCut,Lmin){const N=W*H,lab=new Int32Array(N),st=new Int32Array(N),out=[];let id=0;
+  for(let i=0;i<N;i++){if(!M[i]||lab[i])continue;id++;let sp=0;st[sp++]=i;lab[i]=id;let n=0,sx=0,sy=0,x0=W,x1=0,y0=H,y1=0;
+    while(sp){const p=st[--sp],x=p%W,y=(p-x)/W;n++;sx+=x;sy+=y;if(x<x0)x0=x;if(x>x1)x1=x;if(y<y0)y0=y;if(y>y1)y1=y;
+      if(x>0&&M[p-1]&&!lab[p-1]){lab[p-1]=id;st[sp++]=p-1;}if(x<W-1&&M[p+1]&&!lab[p+1]){lab[p+1]=id;st[sp++]=p+1;}
+      if(y>0&&M[p-W]&&!lab[p-W]){lab[p-W]=id;st[sp++]=p-W;}if(y<H-1&&M[p+W]&&!lab[p+W]){lab[p+W]=id;st[sp++]=p+W;}}
+    const len=o==='h'?x1-x0+1:y1-y0+1,th=n/len;
+    if(len>=Math.max(Lmin,2.2*th)&&th>=tCut*0.7&&th<=2.6*T+3)out.push({o,c:o==='h'?sy/n+0.5:sx/n+0.5,a:o==='h'?x0:y0,b:o==='h'?x1+1:y1+1,t:th});}
+  return out;}
+function fpLines(segs,o){segs.sort((p,q)=>p.c-q.c);const lines=[];
+  for(const s of segs){let L=null;for(const l of lines){if(Math.abs(l.c-s.c)<=Math.max(1.5,0.45*Math.max(l.t,s.t))){L=l;break;}}
+    if(!L){L={o,c:s.c,t:s.t,segs:[],wl:0};lines.push(L);}const len=s.b-s.a;L.c=(L.c*L.wl+s.c*len)/(L.wl+len);L.t=(L.t*L.wl+s.t*len)/(L.wl+len);L.wl+=len;L.segs.push(s);}
+  return lines;}
+function fpSolids(line,cross,T){const items=line.segs.map(s=>({a:s.a,b:s.b,h:s})),b0=line.c-line.t/2-1,b1=line.c+line.t/2+1;
+  for(const v of cross){if(v.a<=b1&&v.b>=b0)items.push({a:v.c-v.t/2,b:v.c+v.t/2,v});}
+  items.sort((p,q)=>p.a-q.a);const sol=[];
+  for(const it of items){const last=sol[sol.length-1];if(last&&it.a<=last.b+Math.max(1,T*0.5)){last.b=Math.max(last.b,it.b);last.items.push(it);if(it.h)last.hasH=true;}
+    else sol.push({a:it.a,b:it.b,items:[it],hasH:!!it.h});}
+  return sol;}
+// what fills a gap in a wall: a swinging door (arc), double door, sliding door, window, or nothing
+function fpGapKind(P,line,x1,x2,T){const o=line.o,g=x2-x1,c=line.c,t=line.t,W=P.W,H=P.H;
+  const at=(al,pp,M)=>{const x=Math.round(o==='h'?al:pp),y=Math.round(o==='h'?pp:al);return x<0||y<0||x>=W||y>=H?0:M[y*W+x];};
+  const arc=(hx,dir,side,r)=>{const face=c+side*t/2;let hit=0,bg=0,leaf=0;
+    for(let k=0;k<20;k++){const th=(8+k*74/19)*deg;if(at(hx+dir*r*Math.cos(th),face+side*r*Math.sin(th),P.Dd))hit++;}
+    for(let k=0;k<10;k++){if(at(hx,face+side*r*(0.15+0.08*k),P.Dd))leaf++;}
+    for(let k=0;k<12;k++){const th=(20+k*50/11)*deg;if(at(hx+dir*0.55*r*Math.cos(th),face+side*0.55*r*Math.sin(th),P.Dd))bg++;}
+    const b=bg/12,a=Math.max(0,(hit/20-b)/(1-b+1e-6));return 0.65*a+0.35*(leaf/10)*(1-b);};
+  let best={s:0};
+  for(const side of[1,-1])for(const r of[g,0.93*g]){const sL=arc(x1,1,side,r),sR=arc(x2,-1,side,r);
+    if(sL>best.s)best={s:sL,kind:'door',hinge:'a',side};if(sR>best.s)best={s:sR,kind:'door',hinge:'b',side};
+    const dbl=(arc(x1,1,side,r/2)+arc(x2,-1,side,r/2))/2;if(dbl>=0.5&&dbl>best.s+0.05)best={s:dbl,kind:'double',side};}
+  if(best.s>=0.5)return best;
+  const rows=[],p0=Math.floor(c-t/2-2),p1=Math.ceil(c+t/2+2),i0=Math.ceil(x1)+1,i1=Math.floor(x2)-1,inner=Math.max(1,i1-i0+1);
+  for(let pp=p0;pp<=p1;pp++){let cnt=0,first=-1,last=-1;for(let al=i0;al<=i1;al++){if(at(al,pp,P.D)){cnt++;if(first<0)first=al;last=al;}}rows.push({pp,cnt,first,last});}
+  const groups=arr=>{let n=0,prev=-9;for(const r of arr){if(r.pp!==prev+1)n++;prev=r.pp;}return n;};
+  const full=groups(rows.filter(r=>r.cnt>=0.85*inner));
+  const part=rows.filter(r=>r.cnt>=0.3*inner&&r.cnt<0.8*inner);
+  if(!full&&part.some(r=>r.first<=x1+0.2*g+2)&&part.some(r=>r.last>=x2-0.2*g-2))return{kind:'slider'};
+  if(full)return{kind:'window'};
+  return{kind:'opening'};}
+function fpEnd(sol,face,which,line){let best=null;
+  for(const it of sol.items){if(!it.v)continue;const v=it.v,lo=v.c-v.t/2,hi=v.c+v.t/2,tol=Math.max(2,v.t*0.6);if(face>=lo-tol&&face<=hi+tol&&(!best||Math.abs(v.c-face)<Math.abs(best.c-face)))best=v;}
+  if(best)return{p:best.c,j:true};return{p:which==='a'?face+line.t/2:face-line.t/2,j:false};}
+function fpBuildLine(P,line,cross,T,doors,walls){const sol=fpSolids(line,cross,T);if(!sol.length)return;const link=new Array(sol.length).fill(false);
+  for(let i=0;i+1<sol.length;i++){const A=sol[i],B=sol[i+1];if(!A.hasH&&!B.hasH)continue;const g=B.a-A.b;if(g>22*T)continue;
+    if(g<2.5*T){link[i]=true;continue;} // tiny break: same wall
+    const k=fpGapKind(P,line,A.b,B.a,T),both=A.hasH&&B.hasH;
+    if(k.kind==='opening'&&!(both?g<=14*T:g<=8*T))continue;
+    link[i]=true;doors.push({o:line.o,c:line.c,t:line.t,x1:A.b,x2:B.a,kind:k.kind,hinge:k.hinge,side:k.side});}
+  let i=0;while(i<sol.length){let j=i;while(j<sol.length-1&&link[j])j++;const ch=sol.slice(i,j+1);
+    if(ch.some(s=>s.hasH)){const A=fpEnd(ch[0],ch[0].a,'a',line),B=fpEnd(ch[ch.length-1],ch[ch.length-1].b,'b',line);
+      if(B.p-A.p>=1)walls.push({o:line.o,c:line.c,t:line.t,a:A.p,b:B.p,ja:A.j,jb:B.j});}
+    i=j+1;}}
+function fpDetect(P,sens){const{W,H,T}=P,N=W*H,ms=Math.max(W,H),tCut=Math.max(P.minT,Math.round(T*sens));
+  const Wm=new Uint8Array(N);for(let i=0;i<N;i++){if(P.Dw[i]){const a=P.rh[i],b=P.rv[i];if((a<b?a:b)>=tCut)Wm[i]=1;}}
+  const[h2,v2]=fpRuns(Wm,W,H),Lmin=Math.max(2*T,Math.round(ms/100)),Hm=new Uint8Array(N),Vm=new Uint8Array(N);
+  for(let i=0;i<N;i++){if(!Wm[i])continue;if(h2[i]>=Lmin)Hm[i]=1;if(v2[i]>=Lmin)Vm[i]=1;}
+  const inside=s=>{const dim=s.o==='h'?H:W;return s.c>dim*0.008&&s.c<dim*0.992;};
+  // hollow (outlined) walls: both edges must be solid lines with empty space between them; this rejects filled-in text
+  const hollowOk=s=>{if(!P.closeR)return true;const at=(al,pp)=>{for(let d=-1;d<=1;d++){const x=Math.round(s.o==='h'?al:pp+d),y=Math.round(s.o==='h'?pp+d:al);if(x>=0&&y>=0&&x<W&&y<H&&P.D[y*W+x])return 1;}return 0;};
+    let f1=0,f2=0,cc=0,n=0;for(let al=s.a+2;al<s.b-2;al+=2){n++;f1+=at(al,s.c-s.t/2+1);f2+=at(al,s.c+s.t/2-1);const x=Math.round(s.o==='h'?al:s.c),y=Math.round(s.o==='h'?s.c:al);if(x>=0&&y>=0&&x<W&&y<H&&P.D[y*W+x])cc++;}
+    return n>0&&f1/n>=0.6&&f2/n>=0.6&&cc/n<=0.5;};
+  const keep=s=>inside(s)&&hollowOk(s),hl=fpLines(fpComps(Hm,W,H,'h',T,tCut,Lmin).filter(keep),'h'),vl=fpLines(fpComps(Vm,W,H,'v',T,tCut,Lmin).filter(keep),'v');
+  const crossOf=ls=>ls.flatMap(l=>l.segs.map(s=>({a:s.a,b:s.b,c:l.c,t:l.t})));const hc=crossOf(hl),vc=crossOf(vl),walls=[],doors=[];
+  for(const l of hl)fpBuildLine(P,l,vc,T,doors,walls);for(const l of vl)fpBuildLine(P,l,hc,T,doors,walls);
+  return{walls:walls.filter(w=>(w.ja||w.jb)||w.b-w.a>=12*T),doors:doors.filter(d=>walls.some(w=>w.o===d.o&&Math.abs(w.c-d.c)<1&&w.a<=d.x1+1&&w.b>=d.x2-1&&((w.ja||w.jb)||w.b-w.a>=12*T))),Wm,T};}
+function fpSkew(Wm,W,H){let cnt=0;for(let i=0;i<W*H;i++)if(Wm[i])cnt++;if(cnt<500)return 0;const step=Math.max(1,Math.floor(cnt/40000)),xs=[],ys=[];let k=0;
+  for(let i=0;i<W*H;i++){if(Wm[i]&&(k++%step===0)){xs.push(i%W);ys.push((i/W)|0);}}
+  const off=W+H,bins=new Int32Array(2*(W+H)+4);
+  const score=a=>{const c=Math.cos(a*deg),s=Math.sin(a*deg);let sc=0;bins.fill(0);for(let i=0;i<xs.length;i++)bins[Math.round(-xs[i]*s+ys[i]*c)+off]++;for(const v of bins)sc+=v*v;
+    bins.fill(0);for(let i=0;i<xs.length;i++)bins[Math.round(xs[i]*c+ys[i]*s)+off]++;for(const v of bins)sc+=v*v;return sc;};
+  let best=0,bs=-1;for(let a=-8;a<=8.001;a+=0.5){const v=score(a);if(v>bs){bs=v;best=a;}}
+  for(let a=best-0.4;a<=best+0.401;a+=0.1){const v=score(a);if(v>bs){bs=v;best=a;}}return Math.round(best*10)/10;}
+function fpRotate(cv,a){const W=cv.width,H=cv.height,c=document.createElement('canvas');c.width=W;c.height=H;const x=c.getContext('2d',{willReadFrequently:true});
+  x.translate(W/2,H/2);x.rotate(-a*deg);x.drawImage(cv,-W/2,-H/2);return c;}
+function fpScore(r){return r?r.det.walls.reduce((a,w)=>a+(w.b-w.a)*((w.ja||w.jb)?1:0.3),0):0;}
+function fpAnalyze(cv0,sens){let cv=cv0,P=fpPass(cv),skew=0;
+  if(P.T){const d=fpDetect(P,sens),sk=fpSkew(d.Wm,P.W,P.H);if(Math.abs(sk)>=0.3){skew=sk;cv=fpRotate(cv0,sk);P=fpPass(cv);}}
+  let best=P.T?{P,det:fpDetect(P,sens)}:null;
+  if(!best||best.det.walls.length<6){const k=Math.max(P.W,P.H)/1600;for(const rr of[2,3,5,7,9]){const Q=fpPass(cv,Math.max(1,Math.round(rr*k)));if(!Q.T)continue;const r={P:Q,det:fpDetect(Q,sens)};if(fpScore(r)>fpScore(best)*1.3)best=r;}}
+  if(best)best.skew=skew;return best;}
+function fpExtent(walls){let x0=Infinity,y0=Infinity,x1=-Infinity,y1=-Infinity;for(const w of walls){const A=w.o==='h'?[w.a,w.c]:[w.c,w.a],B=w.o==='h'?[w.b,w.c]:[w.c,w.b];
+  for(const p of[A,B]){x0=Math.min(x0,p[0]);y0=Math.min(y0,p[1]);x1=Math.max(x1,p[0]);y1=Math.max(y1,p[1]);}}return{x0,y0,x1,y1,w:x1-x0,h:y1-y0};}
+function fpScaleGuess(det){const sw=det.doors.filter(d=>d.kind==='door').map(d=>d.x2-d.x1).sort((a,b)=>a-b);let s,how;
+  if(sw.length){s=32/sw[Math.floor(sw.length/2)];how='doors';}else{s=5/det.T;how='walls';}
+  const e=fpExtent(det.walls),span=Math.max(e.w,e.h)*s;if(!(span<=200*12&&span>=10*12)){s=(45*12)/Math.max(1,e.w,e.h);how='guess';}return{s,how};}
+// pixels -> plan objects in inches
+function fpObjects(det,s,W,H){const e=fpExtent(det.walls),R=v=>Math.round(v*2)/2,toW=(x,y)=>[R((x-e.x0)*s),R((y-e.y0)*s)],thick=t=>Math.min(12,Math.max(3.5,R(t*s)));
+  const pt=(o,al,c)=>o==='h'?toW(al,c):toW(c,al),objs=[];
+  for(const w of det.walls)objs.push({id:rid(),type:'wall',a:pt(w.o,w.a,w.c),b:pt(w.o,w.b,w.c),t:thick(w.t),label:'',color:null});
+  const STD=[24,28,30,32,34,36,48,60,72];
+  for(const d of det.doors){const c=pt(d.o,(d.x1+d.x2)/2,d.c);let w=(d.x2-d.x1)*s;
+    if(d.kind==='door'||d.kind==='double'){const n=STD.reduce((p,q)=>Math.abs(q-w)<Math.abs(p-w)?q:p);w=Math.abs(n-w)<=2.5?n:Math.round(w);}else w=Math.round(w);
+    const o={id:rid(),type:'door',kind:d.kind,x:c[0],y:c[1],ang:d.o==='h'?0:90,w:Math.max(12,w),t:thick(d.t),swing:1,hinge:1};
+    if(d.kind==='door'||d.kind==='double'){if(d.o==='h'){o.hinge=d.hinge==='b'?-1:1;o.swing=d.side>0?1:-1;}else{o.hinge=d.hinge==='b'?-1:1;o.swing=d.side>0?-1:1;}}
+    objs.push(o);}
+  return{objs,bg:{x:(0-e.x0)*s,y:(0-e.y0)*s,w:W*s,h:H*s}};}
+
+// ---------- import screen ----------
+let FPI=null,pdfLibP=null;
+const PDFJS=[['https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js','https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js'],
+  ['https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.min.js','https://cdn.jsdelivr.net/npm/pdfjs-dist@3.11.174/build/pdf.worker.min.js']];
+function loadScriptOnce(u){return new Promise((res,rej)=>{const s=document.createElement('script');s.src=u;s.async=true;s.onload=res;s.onerror=rej;document.head.appendChild(s);});}
+function loadPdfLib(){if(window.pdfjsLib)return Promise.resolve(window.pdfjsLib);if(pdfLibP)return pdfLibP;
+  pdfLibP=(async()=>{for(const[lib,wk]of PDFJS){try{await loadScriptOnce(lib);const L=window.pdfjsLib;if(L){L.GlobalWorkerOptions.workerSrc=wk;return L;}}catch(e){}}throw new Error('pdf');})();
+  pdfLibP.catch(()=>{pdfLibP=null;});return pdfLibP;}
+async function fpPdfCanvas(file){const L=await loadPdfLib(),doc=await L.getDocument({data:new Uint8Array(await file.arrayBuffer())}).promise,pg=await doc.getPage(1);
+  const v1=pg.getViewport({scale:1}),v=pg.getViewport({scale:Math.min(4,2000/Math.max(v1.width,v1.height))}),c=document.createElement('canvas');c.width=Math.round(v.width);c.height=Math.round(v.height);
+  const x=c.getContext('2d');x.fillStyle='#fff';x.fillRect(0,0,c.width,c.height);await pg.render({canvasContext:x,viewport:v}).promise;return c;}
+function fpLoadImage(file){return new Promise((res,rej)=>{const url=URL.createObjectURL(file),im=new Image();im.onload=()=>{res(im);setTimeout(()=>URL.revokeObjectURL(url),2000);};im.onerror=()=>{URL.revokeObjectURL(url);rej(new Error('image'));};im.src=url;});}
+function fpToCanvas(src,w,h){const sc=Math.min(2.5,1600/Math.max(w,h)),W=Math.max(1,Math.round(w*sc)),H=Math.max(1,Math.round(h*sc)),c=document.createElement('canvas');c.width=W;c.height=H;
+  const x=c.getContext('2d',{willReadFrequently:true});x.fillStyle='#fff';x.fillRect(0,0,W,H);x.imageSmoothingQuality='high';x.drawImage(src,0,0,W,H);return c;}
+function fpiOpen(){FPI={sens:0.6,keepBg:true};libOpen=false;openImportModal();}
+const fpWallLen=w=>w.b-w.a;
+function fpiSetResult(an){const F=FPI;F.an=an;F.res=an.det;const g=fpScaleGuess(an.det);if(F.s==null||F.estimated!==false){F.s=g.s;F.estimated=true;F.how=g.how;}
+  F.pick=F.res.walls.length?F.res.walls.reduce((p,w,i,a)=>fpWallLen(w)>fpWallLen(a[p])?i:p,0):-1;}
+async function fpiFile(file){if(!file||!FPI)return;const F=FPI;F.err='';F.an=null;F.res=null;F.s=null;F.estimated=true;
+  F.name=(file.name||'Floor plan').replace(/\.[a-z0-9]+$/i,'').replace(/[_-]+/g,' ').trim().slice(0,40)||'Floor plan';
+  const isPdf=/pdf/i.test(file.type||'')||/\.pdf$/i.test(file.name||'');F.busy=isPdf?'Opening the PDF…':'Opening the picture…';openImportModal();
+  let src;try{src=isPdf?await fpPdfCanvas(file):await fpLoadImage(file);}
+  catch(e){F.busy='';F.err=isPdf?'Couldn’t open that PDF. The first PDF needs an internet connection. You can also take a screenshot of the plan and upload the picture.':'Couldn’t open that picture. Try a JPG or PNG.';openImportModal();return;}
+  if(FPI!==F)return;F.busy='Reading walls and doors…';openImportModal();await new Promise(r=>setTimeout(r,40));
+  try{const cv=fpToCanvas(src,src.naturalWidth||src.width,src.naturalHeight||src.height),an=fpAnalyze(cv,F.sens);if(FPI!==F)return;F.busy='';
+    if(!an||!an.det.walls.length){F.err='Couldn’t find walls in that picture. It works best when walls are drawn as thick dark lines. Try a sharper, straight-on picture or a screenshot of the plan.';openImportModal();return;}
+    fpiSetResult(an);openImportModal();}
+  catch(e){F.busy='';F.err='Something went wrong reading that plan. Try a smaller or clearer picture.';openImportModal();}}
+function fpiCounts(){const d=FPI.res.doors,n=k=>d.filter(x=>k.includes(x.kind)).length;return{walls:FPI.res.walls.length,doors:n(['door','double','slider']),windows:n(['window']),openings:n(['opening'])};}
+function fpiSizeText(){const F=FPI,e=fpExtent(F.res.walls),w=e.w*F.s,h=e.h*F.s;return`Whole plan: about ${fmtLen(w)} × ${fmtLen(h)}${F.estimated?' (estimated'+(F.how==='doors'?' from the door sizes':'')+')':''}.`;}
+function openImportModal(){const m=$('#modal'),F=FPI;if(!F)return;m.dataset.k='fpi';let b='';
+  if(F.busy)b=`<div class="fpi-busy" role="status"><span class="spin" aria-hidden="true"></span>${esc(F.busy)}</div>`;
+  else if(!F.res)b=`<p class="note">Upload a picture, screenshot or PDF of a floor plan. Walls, doors, windows and openings are traced into a project at their real sizes. Furniture, text and measurements are left out.</p>
+    <div class="drop" id="fpi-drop"><button class="btn primary" data-m="fpi-pick">Choose a picture or PDF</button><span>or drop the file here</span></div>
+    <ul class="tips"><li>Works best when walls are drawn as thick dark lines, like most real estate and builder plans.</li><li>Phone photos of a paper plan work too. Shoot straight down, fill the frame and avoid shadows.</li><li>For a PDF, the first page is used.</li></ul>${F.err?`<p class="note err" role="alert">${esc(F.err)}</p>`:''}`;
+  else{const c=fpiCounts(),pk=F.res.walls[F.pick];
+    b=`<div class="fpi-wrap"><canvas id="fpi-cv" aria-label="The plan with the walls and doors that were found"></canvas></div>
+    <p class="fpi-stats"><span class="k k-w"></span>${c.walls} wall${c.walls===1?'':'s'} <span class="k k-d"></span>${c.doors} door${c.doors===1?'':'s'} <span class="k k-n"></span>${c.windows} window${c.windows===1?'':'s'}${c.openings?` <span class="k k-o"></span>${c.openings} opening${c.openings===1?'':'s'}`:''}</p>
+    <div class="sec"><h3>Set the size</h3><p class="note">The highlighted wall is in blue. Tap any wall in the picture, then type its real length from the plan or your tape measure.</p>
+      <div class="fld"><label for="fpi-len">Length of the blue wall</label><div class="copyrow"><input id="fpi-len" class="num" value="${pk?esc(fmtInput(fpWallLen(pk)*F.s)):''}" autocomplete="off" spellcheck="false" enterkeyhint="done"><button class="btn" data-m="fpi-setlen">Set</button></div></div>
+      <p class="note" id="fpi-size">${esc(fpiSizeText())}</p></div>
+    <div class="sec"><h3>Fine-tune</h3><div class="fld"><label for="fpi-sens">Thinnest line that counts as a wall</label><input type="range" id="fpi-sens" min="0.35" max="0.95" step="0.05" value="${F.sens}"></div>
+      <p class="note">Slide right if furniture or text shows up as walls. Slide left if walls are missing.</p>
+      <label class="chk"><input type="checkbox" id="fpi-bg"${F.keepBg?' checked':''}> Keep the picture under the plan for checking (only on this device)</label></div>
+    <div class="btns"><button class="btn primary" data-m="fpi-new">Import as new project</button><button class="btn" data-m="fpi-add">Add to this project</button><button class="btn" data-m="fpi-pick">Use a different file</button></div>`;}
+  m.innerHTML=`<div class="dlg wide" role="dialog" aria-modal="true" aria-label="Import a floor plan"><div class="dlg-h"><h2>Import a floor plan</h2><button class="ib" data-m="close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><div class="dlg-b">${b}</div></div>`;
+  m.hidden=false;if(F.res)requestAnimationFrame(fpiDraw);}
+function fpiDraw(){const cv=$('#fpi-cv'),F=FPI;if(!cv||!F||!F.res)return;const src=F.an.P.cv,cw=(cv.parentElement.clientWidth||600)-2,maxH=Math.max(260,window.innerHeight*0.5),k=Math.min(cw/src.width,maxH/src.height),dpr=Math.min(2,window.devicePixelRatio||1);
+  cv.style.width=Math.round(src.width*k)+'px';cv.style.height=Math.round(src.height*k)+'px';cv.width=Math.round(src.width*k*dpr);cv.height=Math.round(src.height*k*dpr);const x=cv.getContext('2d');x.setTransform(k*dpr,0,0,k*dpr,0,0);
+  const cs=getComputedStyle(document.documentElement),tok=n=>cs.getPropertyValue(n).trim()||'#888';
+  x.fillStyle='#fff';x.fillRect(0,0,src.width,src.height);x.globalAlpha=0.4;x.drawImage(src,0,0);x.globalAlpha=1;
+  const P=(o,al,c)=>o==='h'?[al,c]:[c,al];x.lineCap='square';
+  F.res.walls.forEach((w,i)=>{const A=P(w.o,w.a,w.c),B=P(w.o,w.b,w.c);x.strokeStyle=i===F.pick?tok('--sdim'):tok('--accent');x.globalAlpha=i===F.pick?1:0.85;x.lineWidth=Math.max(w.t,3/k)+(i===F.pick?4/k:0);x.beginPath();x.moveTo(A[0],A[1]);x.lineTo(B[0],B[1]);x.stroke();});
+  x.globalAlpha=1;
+  for(const d of F.res.doors){const col=d.kind==='window'?tok('--ok'):d.kind==='opening'?tok('--muted'):tok('--sdim'),A=P(d.o,d.x1,d.c),B=P(d.o,d.x2,d.c),t=d.t+4/k;
+    x.fillStyle='#fff';x.strokeStyle=col;x.lineWidth=2/k;const rx=Math.min(A[0],B[0])-(d.o==='v'?t/2:0),ry=Math.min(A[1],B[1])-(d.o==='h'?t/2:0),rw=d.o==='h'?Math.abs(B[0]-A[0]):t,rh=d.o==='h'?t:Math.abs(B[1]-A[1]);
+    x.fillRect(rx,ry,rw,rh);x.strokeRect(rx,ry,rw,rh);
+    if(d.kind==='door'||d.kind==='double'){const g=d.x2-d.x1,hs=d.kind==='double'?[[d.x1,1,g/2],[d.x2,-1,g/2]]:[[d.hinge==='b'?d.x2:d.x1,d.hinge==='b'?-1:1,g]];
+      for(const[h,dir,r]of hs){x.beginPath();for(let s=0;s<=16;s++){const th=s/16*Math.PI/2,al=h+dir*r*Math.cos(th),pp=d.c+d.side*(d.t/2+r*Math.sin(th)),p=P(d.o,al,pp);s?x.lineTo(p[0],p[1]):x.moveTo(p[0],p[1]);}
+        const e=P(d.o,h,d.c+d.side*d.t/2);x.lineTo(e[0],e[1]);x.stroke();}}}
+  const pk=F.res.walls[F.pick];if(pk){const A=P(pk.o,pk.a,pk.c),B=P(pk.o,pk.b,pk.c),mx=(A[0]+B[0])/2,my=(A[1]+B[1])/2,txt=fmtLen(fpWallLen(pk)*F.s),fs=13/k;
+    x.font=`600 ${fs}px ${cs.getPropertyValue('--f-mono')||'monospace'}`;const tw=x.measureText(txt).width;let ox=pk.o==='h'?0:fs*1.2+tw/2,oy=pk.o==='h'?-fs*1.4:0;if(pk.o==='h'&&my+oy-fs<0)oy=fs*1.4;if(pk.o==='v'&&mx+ox+tw/2+6/k>src.width)ox=-ox;
+    x.fillStyle=tok('--sdim');x.fillRect(mx+ox-tw/2-5/k,my+oy-fs*0.75,tw+10/k,fs*1.5);x.fillStyle='#fff';x.textAlign='center';x.textBaseline='middle';x.fillText(txt,mx+ox,my+oy);}}
+function fpiPickAt(ev){const cv=$('#fpi-cv'),F=FPI;if(!cv||!F||!F.res)return;const r=cv.getBoundingClientRect(),k=r.width/F.an.P.cv.width,px=(ev.clientX-r.left)/k,py=(ev.clientY-r.top)/k;
+  let best=-1,bd=24/k;F.res.walls.forEach((w,i)=>{const A=w.o==='h'?[w.a,w.c]:[w.c,w.a],B=w.o==='h'?[w.b,w.c]:[w.c,w.b],d=V.dist([px,py],projSeg([px,py],A,B).q);if(d<bd){bd=d;best=i;}});
+  if(best<0)return;F.pick=best;const inp=$('#fpi-len');if(inp){inp.value=fmtInput(fpWallLen(F.res.walls[best])*F.s);inp.focus();inp.select();}fpiDraw();}
+function fpiSetLen(){const F=FPI,inp=$('#fpi-len'),w=F&&F.res&&F.res.walls[F.pick];if(!w||!inp)return;const now=fpWallLen(w)*F.s,r=smartLen(inp.value,now);
+  if(!r||!(r.v>0)){toast('Couldn’t read that length. Try 12\' 6" or 3.8 m');return;}F.s=r.v/fpWallLen(w);F.estimated=false;inp.value=fmtInput(r.v);const sz=$('#fpi-size');if(sz)sz.textContent=fpiSizeText();fpiDraw();toast('Size set. Every wall is scaled to match.',1800);}
+function fpiResens(v){const F=FPI;if(!F||!F.an)return;F.sens=v;try{const det=fpDetect(F.an.P,v);if(!det.walls.length){toast('No walls at that setting');return;}F.an.det=det;F.res=det;
+  F.pick=det.walls.reduce((p,w,i,a)=>fpWallLen(w)>fpWallLen(a[p])?i:p,0);openImportModal();}catch(e){}}
+function fpiImport(add){const F=FPI;if(!F||!F.res)return;const P=F.an.P,out=fpObjects(F.res,F.s,P.W,P.H),objs=out.objs;if(!objs.length){toast('Nothing to import');return;}
+  let bg=null;if(F.keepBg){const k=Math.min(1,1400/Math.max(P.W,P.H)),c=document.createElement('canvas');c.width=Math.round(P.W*k);c.height=Math.round(P.H*k);c.getContext('2d').drawImage(P.cv,0,0,c.width,c.height);
+    try{bg=Object.assign({src:c.toDataURL('image/jpeg',0.72),op:0.4},out.bg);}catch(e){bg=null;}}
+  const nW=objs.filter(o=>o.type==='wall').length,nD=objs.length-nW;
+  if(!add){const ex=cur&&cur.example?cur.id:null,p=blankPlan(F.name||'Floor plan');p.objects=objs;plans[p.id]=p;FPI=null;closeModal();openPlan(p.id);if(ex)delete plans[ex];changed();}
+  else{const b=contentBounds();let dx=0,dy=0;if(b){const e=objs.reduce((m,o)=>{const ps=objPoints(o);for(const q of ps){m[0]=Math.min(m[0],q[0]);m[1]=Math.min(m[1],q[1]);}return m;},[Infinity,Infinity]);dx=Math.round(b[2]+72-e[0]);dy=Math.round(b[1]-e[1]);}
+    checkpoint();for(const o of objs)cur.objects.push(translated(o,dx,dy));if(bg){bg.x+=dx;bg.y+=dy;}FPI=null;closeModal();changed();}
+  if(bg&&!setBg(bg))toast('The picture is too large to keep after the app closes.',2600);
+  fitView();toast(`Imported ${nW} walls and ${nD} doors, windows and openings. Check a few sizes with Smart dim.`,3600);}
+// the plan picture shown under the drawing (kept on this device only)
+let bgCache={id:null,v:null},bgShown=null;
+const bgKey=id=>'fps.bg.'+id;
+function getBg(){if(!cur)return null;if(bgCache.id!==cur.id)bgCache={id:cur.id,v:LS.get(bgKey(cur.id),null)};return bgCache.v;}
+function setBg(v){bgCache={id:cur.id,v};let ok=true;try{if(v)localStorage.setItem(bgKey(cur.id),JSON.stringify(v));else localStorage.removeItem(bgKey(cur.id));}catch(e){ok=false;}render();renderInspector();return ok;}
+function drawBg(){const im=$('#bgimg');if(!im)return;const bg=getBg();if(!bg||bg.hide){im.hidden=true;return;}
+  if(bgShown!==bg){im.src=bg.src;bgShown=bg;}im.hidden=false;im.style.opacity=String(bg.op??0.4);
+  im.style.transform=`translate(${F(view.x+bg.x*view.s)}px,${F(view.y+bg.y*view.s)}px)`;im.style.width=F(bg.w*view.s)+'px';im.style.height=F(bg.h*view.s)+'px';}
+
 // ---------- smart dimensions (driving constraints) ----------
 // sdim: {type:'sdim', kind:'len'|'ang', ref, value, mode, off}
 // len refs: room edge {o,e} · wall {o} · furniture {o,f:'w'|'h'} · door {o,f:'dw'}
@@ -1425,10 +1666,13 @@ function planPanel(){const st=S(),rooms=cur.objects.filter(o=>o.type==='room');c
   ${fld('Snap grid','f-grid',`<select id="f-grid" data-f="grid">${grids.map(g=>`<option value="${g[0]}"${Math.abs(g[0]-st.grid)<1e-6?' selected':''}>${g[1]}</option>`).join('')}</select>`)}</div>`+
   fld('Room sizes measure','f-measure',`<select id="f-measure" data-f="measure"><option value="inside"${st.measure==='inside'?' selected':''}>Inside face of walls (tape measure)</option><option value="center"${st.measure==='center'?' selected':''}>Wall centerlines</option></select>`)+
   `<label class="chk"><input type="checkbox" id="f-dims" data-f="dims"${st.dims?' checked':''}> Show wall lengths on every room</label><label class="chk"><input type="checkbox" id="f-snap" data-f="snap"${st.snap?' checked':''}> Snap to grid and corners</label>`+
-  `<div class="sec"><h3>Project</h3><div class="btns"><button class="btn primary" data-act="psave">Save</button><button class="btn" data-act="popen">Open another…</button><button class="btn" data-act="pnew">New blank project</button><button class="btn danger" data-act="pclear">${clearArm?'Tap again to clear':'Clear this plan'}</button></div><p class="note">${cur.example?'This is the example. Edit it or save it to keep it, or start a new project.':'Saves automatically as you work.'}</p></div>`+
+  `<div class="sec"><h3>Project</h3><div class="btns"><button class="btn primary" data-act="psave">Save</button><button class="btn" data-act="popen">Open another…</button><button class="btn" data-act="pnew">New blank project</button><button class="btn danger" data-act="pclear">${clearArm?'Tap again to clear':'Clear this plan'}</button><button class="btn" data-act="fpiopen">Import a floor plan…</button></div><p class="note">${cur.example?'This is the example. Edit it or save it to keep it, or start a new project.':'Saves automatically as you work.'}</p></div>`+
   `<div class="sec"><h3>Using it in the house</h3><label class="chk"><input type="checkbox" id="f-wake"${wakeOn?' checked':''}> Keep the screen on while this is open</label>${fsOK()?`<div class="btns"><button class="btn" data-act="fs">${document.fullscreenElement||document.webkitFullscreenElement?'Exit full screen':'Full screen'}</button></div>`:''}</div>`+
+  (getBg()?`<div class="sec"><h3>Plan picture</h3><label class="chk"><input type="checkbox" id="f-bgshow"${getBg().hide?'':' checked'}> Show the imported picture under the plan</label>
+    <div class="fld"><label for="f-bgop">Picture strength</label><input type="range" id="f-bgop" min="0.1" max="1" step="0.05" value="${getBg().op??0.4}"></div>
+    <div class="btns"><button class="btn danger" data-act="bgdel">Remove picture</button></div><p class="note">Kept only on this device. It isn’t shared or exported.</p></div>`:'')+
   `<div class="sec"><h3>Totals</h3><div class="stat"><span>Rooms</span><span>${rooms.length}</span></div><div class="stat"><span>Floor area</span><span>${fmtArea(tot)}</span></div><div class="stat"><span>Items</span><span>${cur.objects.length}</span></div></div>`+
-  `<div class="sec"><h3>How it works</h3><p class="note">Draw rooms with <b>Room</b> or <b>Shape</b>. Rooms snap corner to corner, so they share walls. Select a room to type exact wall lengths or add a room next to it. Doors and windows snap onto the nearest wall.</p>
+  `<div class="sec"><h3>How it works</h3><p class="note">Draw rooms with <b>Room</b> or <b>Shape</b>. Rooms snap corner to corner, so they share walls. Select a room to type exact wall lengths or add a room next to it. Doors and windows snap onto the nearest wall. Have a floor plan already? Use <b>Import a floor plan</b> below to trace its walls and doors from a picture or PDF.</p>
   <p class="note"><b>Smart dim</b> locks a size or angle: tap a wall, room side, furniture edge or door and type the size, or tap two connected walls for an angle. Locked sizes can only change through their dimension, and the walls around them adjust to keep every dimension true.</p>
   <p class="note">${COARSE?'Pinch to zoom. Drag empty space to pan. Tap this panel’s header to hide it.':'Scroll to zoom, drag empty space to pan. Keys: <kbd>V</kbd> select, <kbd>R</kbd> room, <kbd>W</kbd> wall, <kbd>D</kbd> door, <kbd>T</kbd> label, <kbd>Del</kbd> delete, <kbd>Ctrl</kbd>+<kbd>D</kbd> duplicate, arrows nudge.'}</p>
   <p class="note">Sizes accept <span style="font-family:var(--f-mono)">12' 6"</span>, <span style="font-family:var(--f-mono)">12-6</span>, <span style="font-family:var(--f-mono)">12.5 ft</span>, <span style="font-family:var(--f-mono)">6 1/2"</span>, <span style="font-family:var(--f-mono)">1200 cm</span> and mixes like <span style="font-family:var(--f-mono)">12ft 6in</span>. A plain number is read as whatever unit makes sense for that size, so 124 on a 10′ wall means 124 inches and 12 means 12 feet.</p></div>`;}
@@ -1475,6 +1719,8 @@ function objPanel(o){if(o.type==='sdim')return sdimPanel(o);let h=fld(o.type==='
 
 const insp=$('#insp-body');
 insp.addEventListener('input',e=>{const el=e.target,f=el.dataset.f;
+  if(el.id==='f-bgop'){const b=getBg();if(b){b.op=+el.value;bgShown=null;try{localStorage.setItem(bgKey(cur.id),JSON.stringify(b));}catch(x){}render();}return;}
+  if(el.id==='f-bgshow'){const b=getBg();if(b){b.hide=!el.checked;try{localStorage.setItem(bgKey(cur.id),JSON.stringify(b));}catch(x){}render();}return;}
   if(el.id==='imp-url')impDraft.url=el.value;else if(el.id==='imp-text')impDraft.txt=el.value;
   else if(ed&&el.id&&el.id.startsWith('m-')&&el.id!=='m-sync'){const k={'m-name':'name','m-w':'w','m-h':'h','m-ht':'ht','m-kind':'kind','m-url':'url','m-note':'note'}[el.id];if(k)ed[k]=el.value;}
   if(!f)return;const o=selObj();
@@ -1530,6 +1776,8 @@ insp.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(!b)r
     case 'libclose':libOpen=false;libEdit=null;ed=null;renderInspector();setTool('select');return;
     case 'import':runImport();return;
     case 'psave':saveNow();renderInspector();return;
+    case 'fpiopen':fpiOpen();return;
+    case 'bgdel':setBg(null);toast('Picture removed');return;
     case 'fs':{const d=document,el=d.documentElement;const on=d.fullscreenElement||d.webkitFullscreenElement;
       const pr=on?(d.exitFullscreen||d.webkitExitFullscreen).call(d):(el.requestFullscreen||el.webkitRequestFullscreen).call(el);Promise.resolve(pr).then(()=>setTimeout(()=>{renderInspector();fitView();},150)).catch(()=>toast('Full screen isn’t available here'));return;}
     case 'popen':openPlansModal();return;
@@ -1605,11 +1853,11 @@ $('#plan-btn').onclick=openPlansModal;$('#share-btn').onclick=openShareModal;$('
 
 let delArm=null,toastT=0,clearArm=false;
 function toast(m,ms){const t=$('#toast');t.textContent=m;t.hidden=false;clearTimeout(toastT);toastT=setTimeout(()=>t.hidden=true,ms||2600);}
-function closeModal(){$('#modal').hidden=true;$('#modal').innerHTML='';}
+function closeModal(){const m=$('#modal');if(m.dataset.k==='fpi')FPI=null;m.hidden=true;m.innerHTML='';m.dataset.k='';}
 function openPlansModal(){const m=$('#modal');m.dataset.k='plans';const list=Object.values(plans).sort((a,b)=>(b.updated||0)-(a.updated||0));
   const when=t=>{if(!t)return'';const d=new Date(t);return d.toLocaleDateString(undefined,{month:'short',day:'numeric'})+' '+d.toLocaleTimeString(undefined,{hour:'numeric',minute:'2-digit'});};
   m.innerHTML=`<div class="dlg" role="dialog" aria-modal="true" aria-label="Projects"><div class="dlg-h"><h2>Projects</h2><button class="ib" data-m="close" aria-label="Close"><svg viewBox="0 0 24 24"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div><div class="dlg-b">
-    <div class="btns"><button class="btn primary" data-m="new">New blank project</button><button class="btn" data-m="save">Save “${esc(cur.name.slice(0,24))}”</button><button class="btn" data-m="saveas">Save a copy</button><button class="btn" data-m="import">Import plan file</button></div>
+    <div class="btns"><button class="btn primary" data-m="new">New blank project</button><button class="btn" data-m="save">Save “${esc(cur.name.slice(0,24))}”</button><button class="btn" data-m="saveas">Save a copy</button><button class="btn" data-m="import">Import plan file</button><button class="btn" data-m="fpi-open">Import a floor plan picture</button></div>
     <p class="note">Projects save automatically as you work. Open any of them below to keep going.</p>
     <span class="lbl">Saved projects</span>
     <ul class="plist">${list.map(p=>`<li class="prow${p===cur?' cur':''}"><div class="pn"><b>${esc(p.name)}${p.example?' (example)':''}${p.shared?' <em class="badge shb">Shared</em>':''}</b><span>${(p.objects||[]).filter(o=>o.type==='room').length} rooms · ${p.example?'not saved yet':'edited '+esc(when(p.updated))}</span></div>
@@ -1642,14 +1890,26 @@ $('#modal').addEventListener('click',async e=>{if(e.target.id==='modal'){closeMo
     case 'sh-leave':closeModal();await shLeave(cur.id,false);break;
     case 'sh-del':{const k='all-'+cur.id;if(delArm!==k){delArm=k;openShareModal();setTimeout(()=>{if(delArm===k){delArm=null;if(!$('#modal').hidden&&$('#modal').dataset.k==='share')openShareModal();}},3500);break;}delArm=null;closeModal();await shLeave(cur.id,true);break;}
     case 'del':{if(delArm!==id){delArm=id;openPlansModal();setTimeout(()=>{if(delArm===id){delArm=null;if(!$('#modal').hidden)openPlansModal();}},3500);break;}
-      delArm=null;const wasCur=cur&&cur.id===id;delete plans[id];try{localStorage.removeItem(histKey(id));}catch(e){}if(COL&&!id.startsWith('x'))COL.doc(id).delete().catch(()=>{});persistLocal();
+      delArm=null;const wasCur=cur&&cur.id===id;delete plans[id];try{localStorage.removeItem(histKey(id));localStorage.removeItem(bgKey(id));}catch(e){}if(COL&&!id.startsWith('x'))COL.doc(id).delete().catch(()=>{});persistLocal();
       if(wasCur){const rest=Object.values(plans).sort((a,b)=>(b.updated||0)-(a.updated||0));if(rest.length)openPlan(rest[0].id);else{const p=blankPlan('My house');plans[p.id]=p;openPlan(p.id);changed();}}
       openPlansModal();toast('Plan deleted');break;}
     case 'png':await exportPNG();break;
+    case 'fpi-open':fpiOpen();break;
+    case 'fpi-pick':$('#fpi-file').click();break;
+    case 'fpi-setlen':fpiSetLen();break;
+    case 'fpi-new':fpiImport(false);break;
+    case 'fpi-add':fpiImport(true);break;
     case 'svg':await save(fname('svg'),exportSVG());break;
     case 'backup':await save('floorplan-backup-'+new Date().toISOString().slice(0,10)+'.json',JSON.stringify({app:'floorplan-sketchpad',version:1,kind:'backup',plans:Object.values(plans).filter(p=>!p.example),library:myLib.items},null,1));break;
     case 'json':await save(fname('json'),JSON.stringify({app:'floorplan-sketchpad',version:1,plan:cur},null,1));break;}});
-$('#modal').addEventListener('change',e=>{if(e.target.id==='p2p-name'){myName=e.target.value.trim().slice(0,40);LS.set('fps.myname',myName);if(SH&&SH.mode==='p2p')p2pSendPres(SH);}});
+$('#fpi-file').addEventListener('change',e=>{const f=e.target.files&&e.target.files[0];e.target.value='';if(f){if(!FPI)FPI={sens:0.6,keepBg:true};fpiFile(f);}});
+$('#modal').addEventListener('pointerdown',e=>{if(e.target.id==='fpi-cv')fpiPickAt(e);});
+$('#modal').addEventListener('keydown',e=>{if(e.target.id==='fpi-len'&&e.key==='Enter'){e.preventDefault();fpiSetLen();}});
+$('#modal').addEventListener('dragover',e=>{if($('#modal').dataset.k!=='fpi')return;e.preventDefault();const d=$('#fpi-drop');if(d)d.classList.add('over');});
+$('#modal').addEventListener('dragleave',e=>{const d=$('#fpi-drop');if(d&&!d.contains(e.relatedTarget))d.classList.remove('over');});
+$('#modal').addEventListener('drop',e=>{if($('#modal').dataset.k!=='fpi')return;e.preventDefault();const f=e.dataTransfer&&e.dataTransfer.files&&e.dataTransfer.files[0];if(f)fpiFile(f);});
+window.addEventListener('resize',()=>{if(FPI&&FPI.res&&!$('#modal').hidden)fpiDraw();});
+$('#modal').addEventListener('change',e=>{if(e.target.id==='fpi-sens'){fpiResens(+e.target.value);return;}if(e.target.id==='fpi-bg'&&FPI){FPI.keepBg=e.target.checked;return;}if(e.target.id==='p2p-name'){myName=e.target.value.trim().slice(0,40);LS.set('fps.myname',myName);if(SH&&SH.mode==='p2p')p2pSendPres(SH);}});
 $('#import-file').addEventListener('change',e=>{const f=e.target.files&&e.target.files[0];if(!f)return;const rd=new FileReader();
   rd.onload=()=>{try{const d=JSON.parse(rd.result);
     if(d&&Array.isArray(d.plans)){let np=0,nf=0,last=null;for(const raw of d.plans){if(!raw||!Array.isArray(raw.objects))continue;const p=normalize(clone(raw));delete p.example;p.updated=p.updated||Date.now();
