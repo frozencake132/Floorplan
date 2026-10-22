@@ -103,6 +103,8 @@ body{overscroll-behavior:none;touch-action:pan-x pan-y}
 #cv.pan{cursor:grab} #cv.cross{cursor:crosshair}
 
 .hint{position:absolute;top:10px;left:50%;transform:translateX(-50%);max-width:calc(100% - 24px);background:var(--panel);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow);padding:6px 10px;display:flex;align-items:center;gap:8px;flex-wrap:wrap;justify-content:center;font-size:13px;color:var(--muted);z-index:2}
+.hint{pointer-events:none}
+.hint button,.hint input,.hint label,.hint select,.hint .swb{pointer-events:auto}
 .hint b{color:var(--ink);font:600 13px var(--f-cond);letter-spacing:.06em;text-transform:uppercase}
 .hint .btn{padding:5px 9px}
 .hint .sw{grid-template-columns:repeat(8,24px)}
@@ -810,7 +812,8 @@ function overlay(){const K=LIVE,sc=view.s,px=v=>v/sc,HR=(COARSE?11:6.5)/sc,A=K.a
   if(o){const lk=!!o.locked;
     if(o.type==='room'){s+=`<polygon points="${P(o.pts)}" style="${dash}"/>`;if(!lk){const n=o.pts.length;
       for(let i=0;i<n;i++){const a=o.pts[i],b=o.pts[(i+1)%n];if(V.dist(a,b)*sc>52){const m=V.mul(V.add(a,b),0.5);s+=hc('e'+i,m[0],m[1],HR*0.8,true);}}
-      o.pts.forEach((p,i)=>s+=hc('v'+i,p[0],p[1],HR));}}
+      o.pts.forEach((p,i)=>s+=hc('v'+i,p[0],p[1],HR));
+      const bb=bbox(o.pts),tx=(bb[0]+bb[2])/2,ty=bb[1]-(o.t||5)/2-px(34);s+=`<line x1="${F(tx)}" y1="${F(bb[1]-(o.t||5)/2)}" x2="${F(tx)}" y2="${F(ty)}" style="stroke:${A};stroke-width:${F(px(1.5))};stroke-dasharray:${F(px(3))} ${F(px(3))};pointer-events:none"/>`+hc('rrot',tx,ty,HR);}}
     else if(o.type==='furn'){const c=furnCorners(o);s+=`<polygon points="${P(c)}" style="${dash}"/>`;if(!lk){c.forEach((p,i)=>s+=hc('c'+i,p[0],p[1],HR*0.85,true));
       const top=V.add([o.x,o.y],V.rot([0,-o.h/2-px(30)],(o.rot||0)*deg)),tm=V.add([o.x,o.y],V.rot([0,-o.h/2],(o.rot||0)*deg));
       s+=`<line x1="${F(tm[0])}" y1="${F(tm[1])}" x2="${F(top[0])}" y2="${F(top[1])}" style="stroke:${A};stroke-width:${F(px(1.5))};pointer-events:none"/>`+hc('rot',top[0],top[1],HR);}}
@@ -836,6 +839,7 @@ function overlay(){const K=LIVE,sc=view.s,px=v=>v/sc,HR=(COARSE?11:6.5)/sc,A=K.a
     else if(g.x!=null)s+=`<line x1="${F(g.x)}" y1="${F(g.y1)}" x2="${F(g.x)}" y2="${F(g.y2)}" style="${gs}"/>`;
     else if(g.y!=null)s+=`<line x1="${F(g.x1)}" y1="${F(g.y)}" x2="${F(g.x2)}" y2="${F(g.y)}" style="${gs}"/>`;}
   const tag=(x,y,txt)=>`<text x="${F(x)}" y="${F(y)}" text-anchor="middle" dominant-baseline="central" style="font-family:${K.mono};font-size:${F(px(12))}px;font-weight:600;fill:${A};pointer-events:none;${halo(K,px)}">${esc(txt)}</text>`;
+  if(op&&op.kind==='handle'&&op.h==='rrot'&&op.tip&&o){const bb=bbox(o.pts);s+=tag((bb[0]+bb[2])/2,bb[1]-(o.t||5)/2-px(58),op.tip);}
   if(op&&op.kind==='handle'&&op.h==='bend'&&op.tip&&o){const m=wallMid(o);s+=tag(m[0],m[1]-px(24),op.tip);}
   const pv=`fill:${A};fill-opacity:.12;stroke:${A};stroke-width:${F(px(2))};pointer-events:none`;
   if(op&&op.kind==='rect'){const p=rectPts(op.a[0],op.a[1],op.b[0],op.b[1]);s+=`<polygon points="${P(p)}" style="${pv}"/>`;const w=Math.abs(op.b[0]-op.a[0]),h=Math.abs(op.b[1]-op.a[1]);
@@ -1604,9 +1608,27 @@ function startHandle(h,w){const o=selObj();const tg=targets(new Set([o.id]));
   let att=[];if(o.type==='room'&&h[0]==='e'){const i=+h.slice(1),n=o.pts.length;att=cur.objects.filter(d=>d.type==='door'&&projSegDist([d.x,d.y],o.pts[i],o.pts[(i+1)%n])<1).map(d=>({id:d.id,orig:clone(d)}));}
   let joints=[],tgw=tg;if(o.type==='wall'&&(h==='a'||h==='b')){joints=wallJoints(o,h);const ex=new Set([o.id,...joints.map(j=>j.id)]);tgw=wallTargets(ex);
     joints.forEach(j=>tgw.pts.push(j.orig[j.end==='a'?'b':'a']));}
-  op={kind:'handle',h,id:o.id,orig:clone(o),start:w,tg:tgw,att,joints,pre:snapState()};}
+  op={kind:'handle',h,id:o.id,orig:clone(o),start:w,tg:tgw,att,joints,pre:snapState()};
+  if(o.type==='room'&&h==='rrot'){op.c=roomCenter(o);op.a0=Math.atan2(w[1]-op.c[1],w[0]-op.c[0]);op.ratt=attachedTo(o).map(clone);}}
+function rotPt(p,c,a){const sn=Math.sin(a),k=Math.cos(a),x=p[0]-c[0],y=p[1]-c[1];return[c[0]+x*k-y*sn,c[1]+x*sn+y*k];}
+function rotatedObj(orig,c,a){const o=clone(orig),R=p=>{const q=rotPt(p,c,a);return[Math.round(q[0]*100)/100,Math.round(q[1]*100)/100];},d=a/deg;
+  switch(o.type){case 'room':case 'pen':o.pts=o.pts.map(R);break;case 'wall':case 'dim':o.a=R(o.a);o.b=R(o.b);break;
+    case 'door':{const q=R([o.x,o.y]);o.x=q[0];o.y=q[1];o.ang=normAng(o.ang+d);break;}
+    case 'furn':case 'text':{const q=R([o.x,o.y]);o.x=q[0];o.y=q[1];o.rot=normAng((o.rot||0)+d);break;}}
+  return o;}
+function roomCenter(r){const b=bbox(r.pts);return[(b[0]+b[2])/2,(b[1]+b[3])/2];}
+// turn a room (and what sits in it) about its center; quarter turns stay lined up with the grid
+function applyRoomTurn(orig,att,c,degs){const a=degs*deg;let n=rotatedObj(orig,c,a),dx=0,dy=0;
+  if(S().snap&&Math.abs(((degs%90)+90)%90)<1e-6){const G=S().grid,b=bbox(n.pts);dx=Math.round(b[0]/G)*G-b[0];dy=Math.round(b[1]/G)*G-b[1];}
+  n=translated(n,dx,dy);replaceObj(n);for(const x of att)replaceObj(translated(rotatedObj(x,c,a),dx,dy));return n;}
+function turnRoom(o,degs){if(!o||o.type!=='room'||o.locked)return;const pre=snapState();checkpoint();
+  const n=applyRoomTurn(clone(o),attachedTo(o).map(clone),roomCenter(o),degs);
+  if(hasGeomDims()&&!solveConstraints({pins:new Set(get(n.id).pts)})){restoreState(pre);undoS.pop();toast('Smart dimensions hold this room in place. Change or delete them to turn it.');render();renderInspector();return;}
+  changed();}
 function projSegDist(p,a,b){return V.dist(projSeg(p,a,b).q,p);}
 function doHandle(w){if(!op.pushed){pushPre(op.pre);op.pushed=true;}const h=op.h,o=clone(op.orig);let g=[];
+  if(o.type==='room'&&h==='rrot'){let d=(Math.atan2(w[1]-op.c[1],w[0]-op.c[0])-op.a0)/deg;d=((d+540)%360)-180;if(S().snap)d=Math.round(d/15)*15;
+    const n=applyRoomTurn(op.orig,op.ratt,op.c,d);op.tip=(d>0?'+':'')+F(d)+'°';guides=[];guardFrame(n.pts);render();return;}
   if(o.type==='room'){const n=o.pts.length;
     if(h[0]==='v'){const sp=snapPoint(w,op.tg);o.pts[+h.slice(1)]=sp.p;g=sp.g;}
     else if(h[0]==='e'){const i=+h.slice(1),a=op.orig.pts[i],b=op.orig.pts[(i+1)%n],u=V.norm(V.sub(b,a)),nn=[-u[1],u[0]];let d=V.dot(V.sub(w,op.start),nn);
@@ -1674,7 +1696,9 @@ const fld=(label,id,inner)=>`<div class="fld"><label for="${id}">${label}</label
 const lenIn=(id,f,v,extra)=>`<input id="${id}" class="num" data-f="${f}" value="${esc(fmtInput(v))}" autocomplete="off" spellcheck="false" enterkeyhint="done"${extra||''}>`;
 const smallIn=(id,f,v)=>`<input id="${id}" class="num" data-f="${f}" value="${esc(fmtSmall(v))}" autocomplete="off" spellcheck="false" enterkeyhint="done">`;
 function colorBlock(o){const c=o.color||'';return`<div class="fld"><span class="lbl">Color</span>${swatchRow(c,'color')}<div class="row"><label class="btn" style="position:relative;overflow:hidden">Custom color<input type="color" id="f-color" data-f="color" value="${/^#[0-9a-f]{6}$/i.test(c)?c:'#8fb8de'}" style="position:absolute;inset:0;opacity:0;cursor:pointer"></label>${o.type!=='room'?`<button class="btn" data-act="color" data-c="">Default</button>`:''}</div></div>`;}
-function actions(o){return`<div class="sec"><h3>Arrange</h3><div class="btns"><button class="btn" data-act="dup">Duplicate</button><button class="btn" data-act="front">Bring to front</button><button class="btn" data-act="back">Send to back</button><button class="btn${o.locked?' on':''}" data-act="lock">${o.locked?'Locked':'Lock'}</button><button class="btn danger" data-act="del">${o.type==='room'?'Delete room &amp; contents':'Delete'}</button></div>${o.type==='room'?`<p class="note">Deleting a room also deletes the furniture, labels, drawings and doors inside it. Doors on a wall shared with another room stay.</p>`:''}</div>`;}
+function actions(o){return(o.type==='room'?`<div class="sec"><h3>Turn</h3><div class="btns"><button class="btn" data-act="rturnl">↺ Turn 90°</button><button class="btn" data-act="rturnr">↻ Turn 90°</button><button class="btn" data-act="rturn180">Turn 180°</button></div>
+    <div class="row">${fld('Turn by (degrees)','f-rturn',`<input id="f-rturn" class="num" data-f="rturn" inputmode="decimal" placeholder="e.g. 45 or -30" autocomplete="off">`)}<span></span></div>
+    <p class="note">Or drag the round handle above the room. Doors on its walls and furniture inside turn with it.</p></div>`:'')+`<div class="sec"><h3>Arrange</h3><div class="btns"><button class="btn" data-act="dup">Duplicate</button><button class="btn" data-act="front">Bring to front</button><button class="btn" data-act="back">Send to back</button><button class="btn${o.locked?' on':''}" data-act="lock">${o.locked?'Locked':'Lock'}</button><button class="btn danger" data-act="del">${o.type==='room'?'Delete room &amp; contents':'Delete'}</button></div>${o.type==='room'?`<p class="note">Deleting a room also deletes the furniture, labels, drawings and doors inside it. Doors on a wall shared with another room stay.</p>`:''}</div>`;}
 function setSheet(v){sheetOpen=v;$('#insp').classList.toggle('open',v);}
 function renderInspector(){if(!cur)return;const el=$('#insp-body');const act=document.activeElement&&document.activeElement.id;const o=selObj();let h='',t,s;
   if(libOpen){t='Furnish';h=libraryPanel();s=libEdit?'Edit saved item':'My furniture · '+myLib.items.length+' saved';}
@@ -1825,6 +1849,7 @@ insp.addEventListener('change',e=>{const el=e.target,f=el.dataset.f;
     case 'shape':o.kind=el.value;break;
     case 'run':{const L=parseLen(el.value,'small',refV);if(!(L>=4&&L<=24))return bad();o.run=F(L);break;}
     case 'stlbl':o.dirLabel=el.value;break;
+    case 'rturn':{const v=smartAngle(el.value);if(v==null||!isFinite(v)){undoS.pop();toast('Type an angle in degrees, like 45 or -30');return;}undoS.pop();turnRoom(o,v);return;}
     case 'bend':{const L=parseLen(el.value,0,Math.abs(o.bend||0)||V.dist(o.a,o.b)/4);if(L==null||L<0)return bad();const max=V.dist(o.a,o.b);o.bend=(o.bend<0?-1:1)*Math.min(max,L);if(Math.abs(o.bend)<0.05)delete o.bend;break;}
     case 'stfw':{const L=parseLen(el.value,0,refV);if(!(L>=12))return bad();o.fw=F(L);break;}
     case 'len':{if(o.type==='wall'&&sdBlocked({o:o.id})){undoS.pop();renderInspector();return;}const L=parseLen(el.value,0,refV);if(!(L>0))return bad();
@@ -1891,6 +1916,7 @@ insp.addEventListener('click',e=>{const b=e.target.closest('[data-act]');if(!b)r
     case 'rot90':o.rot=normAng((o.rot||0)+90);break;
     case 'mirror':o.flip=!o.flip;break;
     case 'bendflip':if(o.bend)o.bend=-o.bend;break;
+    case 'rturnl':case 'rturnr':case 'rturn180':undoS.pop();turnRoom(o,a==='rturnl'?-90:a==='rturnr'?90:180);return;
     case 'bendoff':delete o.bend;break;
     case 'bendhalf':o.bend=(o.bend<0?-1:1)*V.dist(o.a,o.b)/2;break;
     case 'hinge':o.hinge=-(o.hinge||1);break;
