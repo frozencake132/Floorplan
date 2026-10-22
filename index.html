@@ -247,6 +247,7 @@ kbd{font:11px var(--f-mono);border:1px solid var(--line);border-bottom-width:2px
   .zoom{right:10px;bottom:10px}
   .zoom .zin,.zoom .zout{display:none}
   .hint{top:8px;font-size:12.5px}
+  .wide-only{display:none}
   .toast{bottom:calc(178px + env(safe-area-inset-bottom,0px))}
 }
 @media (pointer:coarse){
@@ -254,7 +255,7 @@ kbd{font:11px var(--f-mono);border:1px solid var(--line);border-bottom-width:2px
 }
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 </style>
-<script>window.__FPS_STANDALONE__=true;</script>
+<script>window.__FPS_STANDALONE__=true;window.__FPS_VERSION__=10;</script>
 </head>
 <body>
 <div id="app">
@@ -1677,9 +1678,11 @@ function updateHint(focus){const el=$('#hint');let h='';
   else if(tool==='poly'&&polyDraft&&polyDraft.length){h=`<span>${polyDraft.length} corner${polyDraft.length>1?'s':''}</span><button class="btn" data-hact="pundo">Undo corner</button><button class="btn primary" data-hact="pfinish"${polyDraft.length<3?' disabled':''}>Finish room</button><button class="btn" data-hact="pcancel">Cancel</button>`;}
   else if(tool==='stamp'&&stamp&&STAIR_KINDS.includes(stamp.kind)&&!stamp.libId){h=`<b>Stairs</b><div class="pw">${Object.entries(STAIRS).map(([k,v])=>`<button data-hact="stype" data-k="${k}" class="${stamp.kind===k?'on':''}">${k==='stairs'?'Straight':k==='stairsL'?'L-shaped':'Spiral'}</button>`).join('')}</div><span>Tap the plan to place${stamp.count?` · ${stamp.count} placed`:''}</span><button class="btn" data-hact="srot">Rotate 90°</button><button class="btn primary" data-hact="sdone">Done</button>`;}
   else if(tool==='stamp'&&stamp){h=`<b>Placing</b><span>${esc(stamp.name)} · tap the plan to drop a copy${stamp.count?` · ${stamp.count} placed`:''}</span><button class="btn" data-hact="srot">Rotate 90°</button><button class="btn primary" data-hact="sdone">Done</button>`;}
+  else if(tool==='select'&&selObj()&&selObj().type==='room'&&!selObj().locked&&!libOpen)h=`<b>${esc((selObj().label||'Room').slice(0,18))}</b><button class="btn" data-hact="rl" aria-label="Turn left 90 degrees">↺ 90°</button><button class="btn" data-hact="rr" aria-label="Turn right 90 degrees">↻ 90°</button><span class="wide-only">or drag the round handle</span>`;
   else if(HINTS[tool])h=`<b>${(TOOLS.find(t=>t&&t[0]===tool)||[])[1]||''}</b><span>${HINTS[tool]}</span>`;
   el.innerHTML=h;el.hidden=!h;}
 $('#hint').addEventListener('click',e=>{const b=e.target.closest('[data-hact]');if(!b)return;const a=b.dataset.hact;
+  if(a==='rl'||a==='rr'){turnRoom(selObj(),a==='rl'?-90:90);return;}
   if(a==='pcolor'){paint.color=b.dataset.c;updateHint();}else if(a==='pw'){paint.pen=+b.dataset.w;updateHint();}
   else if(a==='stype'&&stamp){lastStair=b.dataset.k;const s0=STAIRS[lastStair];Object.assign(stamp,{name:s0.name,w:s0.w,h:s0.h,kind:s0.kind,extra:null});updateHint();render();}
   else if(a==='sdset')sdApply();
@@ -1696,11 +1699,12 @@ const fld=(label,id,inner)=>`<div class="fld"><label for="${id}">${label}</label
 const lenIn=(id,f,v,extra)=>`<input id="${id}" class="num" data-f="${f}" value="${esc(fmtInput(v))}" autocomplete="off" spellcheck="false" enterkeyhint="done"${extra||''}>`;
 const smallIn=(id,f,v)=>`<input id="${id}" class="num" data-f="${f}" value="${esc(fmtSmall(v))}" autocomplete="off" spellcheck="false" enterkeyhint="done">`;
 function colorBlock(o){const c=o.color||'';return`<div class="fld"><span class="lbl">Color</span>${swatchRow(c,'color')}<div class="row"><label class="btn" style="position:relative;overflow:hidden">Custom color<input type="color" id="f-color" data-f="color" value="${/^#[0-9a-f]{6}$/i.test(c)?c:'#8fb8de'}" style="position:absolute;inset:0;opacity:0;cursor:pointer"></label>${o.type!=='room'?`<button class="btn" data-act="color" data-c="">Default</button>`:''}</div></div>`;}
-function actions(o){return(o.type==='room'?`<div class="sec"><h3>Turn</h3><div class="btns"><button class="btn" data-act="rturnl">↺ Turn 90°</button><button class="btn" data-act="rturnr">↻ Turn 90°</button><button class="btn" data-act="rturn180">Turn 180°</button></div>
+function turnSec(o){return `<div class="sec"><h3>Turn</h3><div class="btns"><button class="btn" data-act="rturnl">↺ Turn 90°</button><button class="btn" data-act="rturnr">↻ Turn 90°</button><button class="btn" data-act="rturn180">Turn 180°</button></div>
     <div class="row">${fld('Turn by (degrees)','f-rturn',`<input id="f-rturn" class="num" data-f="rturn" inputmode="decimal" placeholder="e.g. 45 or -30" autocomplete="off">`)}<span></span></div>
-    <p class="note">Or drag the round handle above the room. Doors on its walls and furniture inside turn with it.</p></div>`:'')+`<div class="sec"><h3>Arrange</h3><div class="btns"><button class="btn" data-act="dup">Duplicate</button><button class="btn" data-act="front">Bring to front</button><button class="btn" data-act="back">Send to back</button><button class="btn${o.locked?' on':''}" data-act="lock">${o.locked?'Locked':'Lock'}</button><button class="btn danger" data-act="del">${o.type==='room'?'Delete room &amp; contents':'Delete'}</button></div>${o.type==='room'?`<p class="note">Deleting a room also deletes the furniture, labels, drawings and doors inside it. Doors on a wall shared with another room stay.</p>`:''}</div>`;}
+    <p class="note">Or drag the round handle above the room. Doors on its walls and furniture inside turn with it.</p></div>`;}
+function actions(o){return `<div class="sec"><h3>Arrange</h3><div class="btns"><button class="btn" data-act="dup">Duplicate</button><button class="btn" data-act="front">Bring to front</button><button class="btn" data-act="back">Send to back</button><button class="btn${o.locked?' on':''}" data-act="lock">${o.locked?'Locked':'Lock'}</button><button class="btn danger" data-act="del">${o.type==='room'?'Delete room &amp; contents':'Delete'}</button></div>${o.type==='room'?`<p class="note">Deleting a room also deletes the furniture, labels, drawings and doors inside it. Doors on a wall shared with another room stay.</p>`:''}</div>`;}
 function setSheet(v){sheetOpen=v;$('#insp').classList.toggle('open',v);}
-function renderInspector(){if(!cur)return;const el=$('#insp-body');const act=document.activeElement&&document.activeElement.id;const o=selObj();let h='',t,s;
+function renderInspector(){if(!cur)return;if(tool==='select')updateHint();const el=$('#insp-body');const act=document.activeElement&&document.activeElement.id;const o=selObj();let h='',t,s;
   if(libOpen){t='Furnish';h=libraryPanel();s=libEdit?'Edit saved item':'My furniture · '+myLib.items.length+' saved';}
   else if(!o){t='Plan';s=cur.name;h=planPanel();}
   else{t=typeName(o);s=objName(o);h=objPanel(o);}
@@ -1755,6 +1759,7 @@ function planPanel(){const st=S(),rooms=cur.objects.filter(o=>o.type==='room');c
   (getBg()?`<div class="sec"><h3>Plan picture</h3><label class="chk"><input type="checkbox" id="f-bgshow"${getBg().hide?'':' checked'}> Show the imported picture under the plan</label>
     <div class="fld"><label for="f-bgop">Picture strength</label><input type="range" id="f-bgop" min="0.1" max="1" step="0.05" value="${getBg().op??0.4}"></div>
     <div class="btns"><button class="btn danger" data-act="bgdel">Remove picture</button></div><p class="note">Kept only on this device. It isn’t shared or exported.</p></div>`:'')+
+  (window.__FPS_VERSION__?`<p class="note">App version ${window.__FPS_VERSION__}. When you’re online, opening the app gets the newest version.</p>`:'')+
   `<div class="sec"><h3>Totals</h3><div class="stat"><span>Rooms</span><span>${rooms.length}</span></div><div class="stat"><span>Floor area</span><span>${fmtArea(tot)}</span></div><div class="stat"><span>Items</span><span>${cur.objects.length}</span></div></div>`+
   `<div class="sec"><h3>How it works</h3><p class="note">Draw rooms with <b>Room</b> or <b>Shape</b>. Rooms snap corner to corner, so they share walls. Select a room to type exact wall lengths or add a room next to it. Doors and windows snap onto the nearest wall. Have a floor plan already? Use <b>Import a floor plan</b> below to trace its walls and doors from a picture or PDF.</p>
   <p class="note"><b>Smart dim</b> locks a size or angle: tap a wall, room side, furniture edge or door and type the size, or tap two connected walls for an angle. Locked sizes can only change through their dimension, and the walls around them adjust to keep every dimension true.</p>
@@ -1778,7 +1783,7 @@ function objPanel(o){if(o.type==='sdim')return sdimPanel(o);let h=fld(o.type==='
       <span class="lbl">Wall lengths (${o.outline?((o.omeasure||'outside')==='outside'?'outside':'inside'):S().measure==='inside'?'inside':'centerline'})</span><div class="walls">${lens.map((L,i)=>`<div class="wrow"><b>${String.fromCharCode(65+i)}</b><input id="f-edge${i}" data-f="edge" data-i="${i}" value="${esc(fmtInput(L))}" aria-label="Wall ${String.fromCharCode(65+i)} length" autocomplete="off" enterkeyhint="done"${lockA({o:o.id,e:i})}><button class="btn" data-act="split" data-i="${i}" title="Add a corner in the middle of this wall"${dimOn({o:o.id,e:i})?' disabled':''}>Split</button>${o.pts.length>3?`<button class="btn" data-act="merge" data-i="${i}" title="Remove the corner at the end of this wall">Join</button>`:'<span></span>'}</div>`).join('')}</div>
       <div class="row">${fld('Wall thickness','f-wt',smallIn('f-wt','wt',o.t||5))}<span></span></div>
       <label class="chk"><input type="checkbox" id="f-showarea" data-f="showarea"${o.showArea!==false?' checked':''}> Show area on plan</label></div>`;
-    h+=colorBlock(o);
+    h+=turnSec(o)+colorBlock(o);
     h+=`<div class="sec"><h3>Connect</h3><span class="lbl">Add a room on this side</span><div class="compass"><span></span><button class="btn" data-act="adj" data-d="n" aria-label="Add room above">↑</button><span></span><button class="btn" data-act="adj" data-d="w" aria-label="Add room to the left">←</button><span class="mid">${esc((o.label||'Room').slice(0,7))}</span><button class="btn" data-act="adj" data-d="e" aria-label="Add room to the right">→</button><span></span><button class="btn" data-act="adj" data-d="s" aria-label="Add room below">↓</button><span></span></div>`;
     const links=doors.map(d=>{const rs=doorRooms(d).filter(r=>r!==o);const other=rs[0]?rs[0].label||'Room':'Outside';return[other,DOOR_KINDS[d.kind]||'Door'];});
     h+=`<span class="lbl">Doorways &amp; windows</span>${links.length?`<ul class="links">${links.map(l=>`<li><span>${esc(l[0])}</span><span>${esc(l[1])}</span></li>`).join('')}</ul>`:'<p class="note">None yet. Pick the Door tool and tap one of this room’s walls.</p>'}`;
@@ -2074,7 +2079,8 @@ boot();
 })();
 </script>
 <script>
-if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('sw.js').then(reg=>{
+if('serviceWorker' in navigator){window.addEventListener('load',()=>{navigator.serviceWorker.register('sw.js',{updateViaCache:'none'}).then(reg=>{
+  document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')reg.update().catch(()=>{});});
   reg.addEventListener('updatefound',()=>{const w=reg.installing;if(!w)return;w.addEventListener('statechange',()=>{if(w.state==='installed'&&navigator.serviceWorker.controller){const t=document.getElementById('toast');if(t){t.textContent='An update is ready. Close and reopen the app to use it.';t.hidden=false;setTimeout(()=>t.hidden=true,6000);}}});});
 }).catch(()=>{});});}
 </script>
